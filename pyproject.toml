@@ -1,0 +1,40 @@
+[build-system]
+requires = [ "hatchling" ]
+build-backend = "hatchling.build"
+
+[project]
+name = "GeoMark"
+version = "0.1.0"
+description = "Self-contained RTK GPS base & rover system for centimeter-accurate field surveying"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.11"
+dependencies = [
+    "pyserial>=3.5",  # UM980 UART communication
+    "pynmea2>=1.19",  # NMEA sentence parsing
+    "pyrtcm>=1.0",    # RTCM3 message handling
+    "fastapi>=0.111", # Field web UI backend
+    "uvicorn>=0.29",  # ASGI server for FastAPI
+    "jinja2>=3.1",    # HTML templating
+    "pyyaml>=6.0",    # YAML config loading
+    "rich>=13.0",     # Terminal UI / CLI display
+]
+
+[project.optional-dependencies]
+dev = [ "pytest>=8.0", "pytest-cov", "ruff" ]
+
+[project.scripts]
+geomark = "geomark.main:main"
+
+[tool.hatch.build.targets.wheel]
+packages = [ "src/geomark" ]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = [ "E", "F", "I", "UP" ]
+
+[tool.pytest.ini_options]
+testpaths = [ "tests" ]
