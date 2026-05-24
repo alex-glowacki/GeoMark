@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Any
 
 import yaml
-
 
 DEFAULT_CONFIG_DIR = Path(__file__).parent.parent.parent / "config"
 

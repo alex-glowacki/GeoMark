@@ -4,10 +4,9 @@ from __future__ import annotations
 
 from rich.console import Console
 from rich.table import Table
-from rich.live import Live
 
-from geomark.gnss.nmea import GNSSFix
 from geomark.collector.session import SurveySession
+from geomark.gnss.nmea import GNSSFix
 
 console = Console()
 

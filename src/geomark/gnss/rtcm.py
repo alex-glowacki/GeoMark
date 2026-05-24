@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-
 # RTCM3 framing constants
 _RTCM3_PREAMBLE = 0xD3
 _RTCM3_HEADER_LEN = 3
