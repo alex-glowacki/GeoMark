@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 @dataclass
 class SurveyPoint:
     """A single collected survey point.
-    
+
     Attributes:
         name: User-assigned point name or identifier.
         latitude: WGS84 latitude in decimal degrees.
@@ -21,7 +21,7 @@ class SurveyPoint:
         timestamp: UTC timestamp of the fix.
         notes: Optional field notes attached to this point.
     """
-    
+
     name: str
     latitude: float
     longitude: float
@@ -29,14 +29,15 @@ class SurveyPoint:
     fix_quality: int
     hdop: float
     satellites: int
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))  # noqa: UP017
     notes: str = ""
-    
+
     @property
     def is_rtk_fixed(self) -> bool:
         """True if this point was collected with a full RTK fixed solution."""
         return self.fix_quality == 4
-    
+
+    @property
     def is_rtk_float(self) -> bool:
         """True if this point was collected with an RTK float solution."""
         return self.fix_quality == 5
