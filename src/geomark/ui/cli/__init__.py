@@ -1,0 +1,1 @@
+"""CLI UI package - Rich-based terminal display fallback."""

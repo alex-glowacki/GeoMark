@@ -1,0 +1,1 @@
+"""Shared GNSS layer - UM980 driver, NMEA parser, RTCM3 handler."""

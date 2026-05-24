@@ -1,0 +1,1 @@
+"""UI package - web interface and CLI display."""

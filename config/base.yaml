@@ -1,0 +1,22 @@
+# GeoMark - Base Station Configuration
+
+serial:
+  port: /dev/ttyAMA0 # UM980 UART on Raspberry Pi Zero 2 W
+  baudrate: 115200
+
+radio:
+  port: /dev/ttyUSB0 # SiK telemetry radio USB serial
+  baudrate: 57600
+
+# Survey-in parameters
+survey_in_duration: 60 # seconds
+survey_in_accuracy: 0.05 # meters
+
+# RTCM3 messages to broadcast (message type: output rate in seconds)
+rtcm_messages:
+  1005: 5 # Stationary RTK reference Station
+  1033: 5 # Receiver and antenna description
+  1074: 1 # GPS MSM4
+  1084: 1 # GLONASS MSM4
+  1094: 1 # Galileo MSM4
+  1124: 1 # BeiDou MSM4

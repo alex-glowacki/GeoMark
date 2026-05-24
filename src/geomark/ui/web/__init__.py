@@ -1,0 +1,1 @@
+"""Web UI package - FastAPI app served over the Pi hotspot."""

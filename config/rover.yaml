@@ -1,0 +1,22 @@
+# GeoMark - Rover Station Configuration
+
+serial:
+  port: /dev/ttyAMA0 # UM980 UART on Raspberry Pi Zero 2 W
+  baudrate: 115200
+
+radio:
+  port: /dev/ttyUSB0 # SiK telemetry radio USB serial (RTCM3 RX from base)
+  baudrate: 57600
+
+# NMEA output messages (sentence: output rate in Hz)
+nmae_messages:
+  GGA: 10 # Position fix - primary sentence for data collection
+  GSV: 1 # Satellites in view
+
+# Data collection output directory (on the Pi SD card)
+output_dir: /home/pi/geomark_data
+
+# Web UI
+ui:
+  host: 0.0.0.0
+  port: 8080

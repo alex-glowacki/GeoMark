@@ -1,0 +1,13 @@
+[Unit]
+Description=GeoMark Rover Station
+After=network.target
+
+[Service]
+Type=simple
+User=pi
+ExecStart=/home/pi/geomark/scripts/start_rover.sh
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
