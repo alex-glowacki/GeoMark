@@ -1,0 +1,25 @@
+# Build directories
+build/
+
+# CMake generated
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+install_manifest.txt
+compile_commands.json
+
+# Compiled binaries
+*.elf
+*.bin
+*.out
+geomark
+
+# Editor
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db

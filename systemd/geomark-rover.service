@@ -1,0 +1,14 @@
+[Unit]
+Description=GeoMark Rover
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/geomark --mode rover --config /etc/geomark/geomark.conf
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

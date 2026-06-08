@@ -1,0 +1,56 @@
+{
+    "version": 3,
+    "cmakeMinimumRequired": {
+        "major": 3,
+        "minor": 20,
+        "patch": 0
+    },
+    "configurePresets": [
+        {
+            "name": "host-debug",
+            "displayName": "Host Debug (WSL2 x86-64)",
+            "description": "Build and test on WSL2 - native GCC, debug symbols",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build/host",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug"
+            }
+        },
+        {
+      "name": "pi-base-release",
+      "displayName": "Pi Base Release (ARMv6 32-bit)",
+      "description": "Cross-compile for Pi Zero W base station",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/pi-base",
+      "toolchainFile": "${sourceDir}/cmake/arm-linux-gnueabihf.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
+      "name": "pi-rover-release",
+      "displayName": "Pi Rover Release (AArch64 64-bit)",
+      "description": "Cross-compile for Pi Zero 2 W rover",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/pi-rover",
+      "toolchainFile": "${sourceDir}/cmake/aarch64-linux-gnu.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    }
+    ],
+    "buildPresets": [
+    {
+      "name": "host-debug",
+      "configurePreset": "host-debug"
+    },
+    {
+      "name": "pi-base-release",
+      "configurePreset": "pi-base-release"
+    },
+    {
+      "name": "pi-rover-release",
+      "configurePreset": "pi-rover-release"
+    }
+  ]
+}
