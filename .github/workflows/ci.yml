@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  build-and-test:
+    name: Host Build & Test (x86-64 Linux)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            gcc \
+            cmake \
+            ninja-build
+
+      - name: Configure (host-debug)
+        run: cmake --preset host-debug
+
+      - name: Build (host-debug)
+        run: cmake --build build/host
+
+      - name: Run tests
+        run: ctest --test-dir build/host --output-on-failure
+
+  cross-compile-base:
+    name: Cross-Compile Pi Base (ARMv6 32-bit)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install cross-compile toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake \
+            ninja-build \
+            gcc-arm-linux-gnueabihf \
+            binutils-arm-linux-gnueabihf
+
+      - name: Configure (pi-base-release)
+        run: cmake --preset pi-base-release
+
+      - name: Build (pi-base-release)
+        run: cmake --build build/pi-base
+
+  cross-compile-rover:
+    name: Cross-Compile Pi Rover (AArch64 64-bit)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install cross-compile toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake \
+            ninja-build \
+            gcc-aarch64-linux-gnu \
+            binutils-aarch64-linux-gnu
+
+      - name: Configure (pi-rover-release)
+        run: cmake --preset pi-rover-release
+
+      - name: Build (pi-rover-release)
+        run: cmake --build build/pi-rover
