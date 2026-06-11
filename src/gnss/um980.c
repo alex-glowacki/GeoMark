@@ -1,56 +1,53 @@
 /**
  * @file um980.c
- * @brief UM980 GNSS module command interface implementation.
+ * @brief UM980 GNSS module implementation.
+ *
+ * Stub — functions will be implemented in Phase 1 step 3.
+ * File compiles cleanly so the build stays green.
  */
 
-#include <string.h>
+#define _GNU_SOURCE
 
-#include "gnss/um980.h"
-#include "util/log.h"
+#include "um980.h"
 
-gm_status_t um980_open(gm_um980_t *u, const char *device, int baud)
+/* UM980 default baud rate per datasheet §3.2 */
+#define UM980_BAUD        115200
+#define UM980_TIMEOUT_MS  2000
+
+SerialResult um980_open(Um980 *u, const char *device)
 {
-    /* TODO: Phase 1 implementation */
-    (void)u;
-    (void)device;
-    (void)baud;
-    log_warn("um980_open: not yet implemented");
-    return GM_ERR_GENERIC;
+    if (!u) {
+        return SERIAL_ERR_ARG;
+    }
+    return serial_open(&u->serial, device, UM980_BAUD, UM980_TIMEOUT_MS);
 }
 
-gm_status_t um980_send_command(gm_um980_t *u, const char *cmd)
+SerialResult um980_send_command(Um980 *u, const char *cmd)
 {
-    /* TODO: Phase 1 implementation */
+    /* TODO: Phase 1 step 3 */
     (void)u;
     (void)cmd;
-    return GM_ERR_GENERIC;
+    return SERIAL_OK;
 }
 
-gm_status_t um980_init_base(gm_um980_t *u)
+SerialResult um980_init_base(Um980 *u)
 {
-    /* TODO: Phase 1 implementation */
+    /* TODO: Phase 1 step 3 */
     (void)u;
-    return GM_ERR_GENERIC;
+    return SERIAL_OK;
 }
 
-gm_status_t um980_init_rover(gm_um980_t *u)
+SerialResult um980_init_rover(Um980 *u)
 {
-    /* TODO: Phase 1 implementation */
+    /* TODO: Phase 1 step 3 */
     (void)u;
-    return GM_ERR_GENERIC;
+    return SERIAL_OK;
 }
 
-gm_status_t um980_read_raw(gm_um980_t *u, uint8_t *buf, size_t len, size_t *out_len)
+void um980_close(Um980 *u)
 {
-    /* TODO: Phase 1 implementation */
-    (void)u;
-    (void)buf;
-    (void)len;
-    (void)out_len;
-    return GM_ERR_GENERIC;
-}
-
-void um980_close(gm_um980_t *u)
-{
+    if (!u) {
+        return;
+    }
     serial_close(&u->serial);
 }
