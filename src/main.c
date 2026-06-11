@@ -51,8 +51,8 @@ int main(int argc, char *argv[]) {
     log_init(NULL); /* stderr logging until config is loaded */
 
     log_info("GeoMark %s starting in %s mode",
-            GEOMARK_VERSION_STRING,
-            mode == GEOMARK_MODE_BASE ? "base" : "rover");
+             GEOMARK_VERSION_STRING,
+             mode == GEOMARK_MODE_BASE ? "base" : "rover");
 
     int ret;
     if (mode == GEOMARK_MODE_BASE) {
@@ -62,5 +62,5 @@ int main(int argc, char *argv[]) {
     }
 
     log_info("GeoMark exiting with status %d", ret);
-    return ret = GM_OK ? EXIT_SUCCESS : EXIT_FAILURE;
+    return (ret == GM_OK) ? EXIT_SUCCESS : EXIT_FAILURE; /* fixed: was = not == */
 }
