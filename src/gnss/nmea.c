@@ -15,7 +15,8 @@
  * Stops at '*' (checksum delimiter) or end of string.
  * Returns true if the field index exists (value may be empty string).
  */
-static bool nmea_field(const char *sentence, int n, char *buf, size_t buf_len) {
+static bool nmea_field(const char *sentence, int n, char *buf, size_t buf_len)
+{
     const char *p = sentence;
     int idx = 0;
 
@@ -37,10 +38,30 @@ static bool nmea_field(const char *sentence, int n, char *buf, size_t buf_len) {
 }
 
 /**
+ * Return true if the sentence type field (field 0, after '$') ends with
+ * the given 3-character type tag (e.g. "GGA", "RMC").
+ * Handles any talker prefix: $GPGGA, $GNGGA, $GLGGA, etc.
+ */
+static bool nmea_is_type(const char *sentence, const char *type)
+{
+    if (!sentence || *sentence != '$') return false;
+    /* Field 0 is the talker+type string, e.g. "GNGGA" or "GPGGA".
+     * We only care that it ends with 'type' (last 3 characters). */
+    const char *comma = strchr(sentence, ',');
+    if (!comma) return false;
+    /* Length of field 0 content (excluding '$' and ','). */
+    ptrdiff_t field_len = comma - (sentence + 1);
+    if (field_len < 3) return false;
+    /* Compare the last 3 characters of field 0 against 'type'. */
+    return strncmp(comma - 3, type, 3) == 0;
+}
+
+/**
  * Convert NMEA DDmm.mmmm / DDDmm.mmmm to decimal degrees.
  * Returns 0.0 on empty input — callers rely on NmeaGga/NmeaRmc.valid instead.
  */
-static double ddmm_to_deg(const char *s) {
+static double ddmm_to_deg(const char *s)
+{
     if (!s || *s == '\0') return 0.0;
     double raw = atof(s);
     int degrees = (int)(raw / 100);
@@ -52,10 +73,11 @@ static double ddmm_to_deg(const char *s) {
  * Public API
  * ------------------------------------------------------------------------- */
 
-bool nmea_checksum_valid(const char *sentence) {
+bool nmea_checksum_valid(const char *sentence)
+{
     if (!sentence || *sentence != '$') return false;
 
-    const char *p = sentence + 1;   /* skip '$' */
+    const char *p = sentence + 1; /* skip '$' */
     uint8_t calc = 0;
 
     while (*p && *p != '*') {
@@ -63,7 +85,7 @@ bool nmea_checksum_valid(const char *sentence) {
     }
 
     if (*p != '*') return false;
-    p++;    /* skip '*' */
+    p++; /* skip '*' */
 
     if (p[0] == '\0' || p[1] == '\0') return false;
 
@@ -72,10 +94,12 @@ bool nmea_checksum_valid(const char *sentence) {
     return calc == expected;
 }
 
-bool nmea_parse_gga(const char *sentence, NmeaGga *out) {
+bool nmea_parse_gga(const char *sentence, NmeaGga *out)
+{
     if (!out) return false;
     memset(out, 0, sizeof(*out));
 
+    if (!nmea_is_type(sentence, "GGA")) return false;
     if (!nmea_checksum_valid(sentence)) return false;
 
     char f[32];
@@ -112,20 +136,22 @@ bool nmea_parse_gga(const char *sentence, NmeaGga *out) {
     if (!nmea_field(sentence, 9, f, sizeof(f)) || f[0] == '\0') return false;
     double alt_msl = atof(f);
 
-    out->lat            = lat;
-    out->lon            = lon;
-    out->alt_msl        = alt_msl;
-    out->hdop           = hdop;
-    out->fix_quality    = fix_quality;
-    out->num_sats       = num_sats;
-    out->valid          = true;
+    out->lat         = lat;
+    out->lon         = lon;
+    out->alt_msl     = alt_msl;
+    out->hdop        = hdop;
+    out->fix_quality = fix_quality;
+    out->num_sats    = num_sats;
+    out->valid       = true;
     return true;
 }
 
-bool nmea_parse_rmc(const char *sentence, NmeaRmc *out) {
+bool nmea_parse_rmc(const char *sentence, NmeaRmc *out)
+{
     if (!out) return false;
     memset(out, 0, sizeof(*out));
 
+    if (!nmea_is_type(sentence, "RMC")) return false;
     if (!nmea_checksum_valid(sentence)) return false;
 
     char f[32];
@@ -158,11 +184,11 @@ bool nmea_parse_rmc(const char *sentence, NmeaRmc *out) {
     if (!nmea_field(sentence, 8, f, sizeof(f)) || f[0] == '\0') return false;
     double course_deg = atof(f);
 
-    out->lat            = lat;
-    out->lon            = lon;
-    out->speed_knots    = speed_knots;
-    out->course_deg     = course_deg;
-    out->active         = active;
-    out->valid          = true;
+    out->lat         = lat;
+    out->lon         = lon;
+    out->speed_knots = speed_knots;
+    out->course_deg  = course_deg;
+    out->active      = active;
+    out->valid       = true;
     return true;
 }

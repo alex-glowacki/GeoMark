@@ -9,6 +9,7 @@ set(TEST_SOURCES_COMMON
     ${PROJECT_SOURCE_DIR}/src/stream/serial.c
     ${PROJECT_SOURCE_DIR}/src/stream/radio.c
     ${PROJECT_SOURCE_DIR}/src/stream/file.c
+    ${PROJECT_SOURCE_DIR}/src/collector/collector.c
 )
 
 function(add_geomark_test target source)
@@ -23,3 +24,18 @@ endfunction()
 add_geomark_test(test_nmea   test_nmea.c)
 add_geomark_test(test_rtcm3  test_rtcm3.c)
 add_geomark_test(test_config test_config.c)
+
+function(add_geomark_test_threaded target source extra_sources)
+    add_executable(${target} ${source} ${TEST_SOURCES_COMMON} ${extra_sources})
+    target_include_directories(${target} PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src
+    )
+    target_link_libraries(${target} PRIVATE pthread)
+    add_test(NAME ${target} COMMAND ${target})
+endfunction()
+
+add_geomark_test_threaded(test_collector
+    ${PROJECT_SOURCE_DIR}/tests/test_collector.c
+    ${PROJECT_SOURCE_DIR}/src/collector/collector.c
+)
