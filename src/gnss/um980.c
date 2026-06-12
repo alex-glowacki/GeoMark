@@ -4,11 +4,11 @@
  *
  * Command protocol notes:
  *   - Every command is terminated with \r\n before sending.
- *   - The UM980 echoes back a response on a single line:
- *       "$<CMD>,OK*<checksum>\r\n"    — command accepted
- *       "$<CMD>,ERROR*<checksum>\r\n" — command rejected
- *   - We scan the response for ",OK" or ",ERROR" substrings.
- *     The response checksum is not re-verified here; the UART link
+*   - The UM980 response format observed on hardware:
+ *       "$command,<CMD>,response: OK*<checksum>\r\n"   — accepted
+ *       "$command,<CMD>,response: ERROR*<checksum>\r\n" — rejected
+ *   - We scan for the substring "OK" or "ERROR" (not ",OK"/",ERROR")
+ *     to be robust to response format variations.
  *     is short (<1 m) and bit errors are negligible for ASCII ACKs.
  *   - We do not call SAVECONFIG. GeoMark re-initializes the UM980 on
  *     every startup so the active config always matches the binary.
@@ -128,10 +128,10 @@ SerialResult um980_send_command(Um980 *u, const char *cmd) {
             return SERIAL_ERR_IO;
         }
 
-        if (strstr(resp, ",OK") != NULL) {
+        if (strstr(resp, "OK") != NULL) {
             return SERIAL_OK;
         }
-        if (strstr(resp, ",ERROR") != NULL) {
+        if (strstr(resp, "ERROR") != NULL) {
             return SERIAL_ERR_IO;
         }
         /* else: unsolicited line (NMEA etc.) — keep reading */
