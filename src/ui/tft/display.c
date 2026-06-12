@@ -2,16 +2,10 @@
  * @file display.c
  * @brief ST7796S SPI display driver via Linux spidev.
  *
- * ST7796S command references:
- *   - Sitronix ST7796S datasheet (displayfuture.com mirror)
- *   - TFT_eSPI ST7796_Init.h (Bodmer, MIT license) — init sequence cross-ref
- *   - LCD wiki MSP4021 user manual — confirmed CPOL=0/CPHA=0, MADCTL=0x48
+ * GPIO via kernel character device API (/dev/gpiochip0,
+ * GPIO_V2_GET_LINE_IOCTL). Required on kernel 6.x — sysfs GPIO deprecated.
  *
- * DC/RS and RST are driven via Linux sysfs GPIO (/sys/class/gpio).
- * SPI CS is handled by the kernel spidev driver (not bit-banged).
- *
- * SPI mode: CPOL=0, CPHA=0 (SPI mode 0).
- * Max clock: 40 MHz (ST7796S datasheet limit for write cycle).
+ * MADCTL 0x28 (MV|MY) confirmed on hardware for full-screen landscape fill.
  */
 
 #define _GNU_SOURCE
@@ -23,174 +17,132 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <sys/ioctl.h>
+#include <linux/gpio.h>
 #include <linux/spi/spidev.h>
 
 #include "ui/tft/display.h"
 #include "util/log.h"
 
 /* -------------------------------------------------------------------------
- * ST7796S command bytes (Sitronix datasheet §8)
+ * ST7796S command bytes
  * ---------------------------------------------------------------------- */
 
-#define ST7796_NOP      0x00
-#define ST7796_SWRESET  0x01 /* Software reset */
-#define ST7796_SLPOUT   0x11 /* Sleep out */
-#define ST7796_NORON    0x13 /* Normal display mode on */
-#define ST7796_INVOFF   0x20 /* Display inversion off */
-#define ST7796_INVON    0x21 /* Display inversion on */
-#define ST7796_DISPOFF  0x28 /* Display off */
-#define ST7796_DISPON   0x29 /* Display on */
-#define ST7796_CASET    0x2A /* Column address set */
-#define ST7796_RASET    0x2B /* Row address set */
-#define ST7796_RAMWR    0x2C /* Memory write */
-#define ST7796_MADCTL   0x36 /* Memory data access control */
-#define ST7796_COLMOD   0x3A /* Interface pixel format */
-#define ST7796_B4H      0xB4 /* Display inversion control */
-#define ST7796_B6H      0xB6 /* Display function control */
-#define ST7796_C0H      0xC0 /* Power control 1 */
-#define ST7796_C1H      0xC1 /* Power control 2 */
-#define ST7796_C2H      0xC2 /* Power control 3 */
-#define ST7796_C5H      0xC5 /* VCOM control */
-#define ST7796_E0H      0xE0 /* Positive gamma control */
-#define ST7796_E1H      0xE1 /* Negative gamma control */
-#define ST7796_E8H      0xE8 /* Display pump ratio */
-#define ST7796_F0H      0xF0 /* Command set control */
+#define ST7796_SLPOUT   0x11
+#define ST7796_NORON    0x13
+#define ST7796_DISPON   0x29
+#define ST7796_CASET    0x2A
+#define ST7796_RASET    0x2B
+#define ST7796_RAMWR    0x2C
+#define ST7796_MADCTL   0x36
+#define ST7796_COLMOD   0x3A
+#define ST7796_B4H      0xB4
+#define ST7796_B6H      0xB6
+#define ST7796_C1H      0xC1
+#define ST7796_C2H      0xC2
+#define ST7796_C5H      0xC5
+#define ST7796_E0H      0xE0
+#define ST7796_E1H      0xE1
+#define ST7796_E8H      0xE8
+#define ST7796_F0H      0xF0
 
 /*
- * MADCTL byte for landscape 480x320, RGB order:
- *   MX=1 (X-mirror), MY=0, MV=1 (row/col exchange) → landscape
- *   ML=0, BGR=0 (RGB), MH=0
- *   0x48 = MX | MV = 0x40 | 0x08 — confirmed by TFT_eSPI and LCD wiki
+ * MADCTL 0x28 = MV|MY — confirmed on hardware (Hosyond MSP4022).
+ * MV=1: row/col exchange (landscape), MY=1: Y-mirror.
+ * 0x48 (MV|MX) fills only right 2/3 of screen on this module.
  */
-#define ST7796_MADCTL_LANDSCAPE 0x48
+#define ST7796_MADCTL_LANDSCAPE 0x28
 
-/* COLMOD 0x55 = 16-bit RGB565 */
+/* COLMOD 0x55 = RGB565 */
 #define ST7796_COLMOD_16BIT 0x55
 
-/* SPI clock: 40 MHz — within ST7796 write cycle spec */
+/* SPI clock: 40 MHz */
 #define TFT_SPI_HZ 40000000u
+
+/* gpiochip device */
+#define TFT_GPIOCHIP "/dev/gpiochip0"
 
 /* -------------------------------------------------------------------------
  * Module state
  * ---------------------------------------------------------------------- */
 
-static int s_spi_fd = -1;
-static int s_dc_gpio = -1;
-static int s_rst_gpio = -1;
+static int s_spi_fd   = -1;
+static int s_gpio_fd  = -1;  /* /dev/gpiochip0 chip fd */
+static int s_dc_fd    = -1;  /* line request fd — DC/RS */
+static int s_rst_fd   = -1;  /* line request fd — RESET */
 
 /* -------------------------------------------------------------------------
- * sysfs GPIO helpers
+ * GPIO character device helpers
  * ---------------------------------------------------------------------- */
 
-static int gpio_export(int gpio) {
-    char path[64];
-    /* Already exported? */
-    snprintf(path, sizeof(path), "/sys/class/gpio/gpio%d/value", gpio);
-    if (access(path, F_OK) == 0)
-        return 0;
+static int gpio_request_output(int chip_fd, unsigned int line, int initial)
+{
+    struct gpio_v2_line_request req;
+    memset(&req, 0, sizeof(req));
 
-    int fd = open("/sys/class/gpio/export", O_WRONLY);
-    if (fd < 0) {
-        log_error("display: gpio_export: open export: %s", strerror(errno));
+    req.offsets[0] = line;
+    req.num_lines  = 1;
+    snprintf(req.consumer, sizeof(req.consumer), "geomark-display");
+
+    req.config.flags     = GPIO_V2_LINE_FLAG_OUTPUT;
+    req.config.num_attrs = 1;
+    req.config.attrs[0].attr.id     = GPIO_V2_LINE_ATTR_ID_OUTPUT_VALUES;
+    req.config.attrs[0].attr.values = (uint64_t)initial;
+    req.config.attrs[0].mask        = 1ULL;
+
+    if (ioctl(chip_fd, GPIO_V2_GET_LINE_IOCTL, &req) < 0) {
+        log_error("display: gpio request line %u: %s", line, strerror(errno));
         return -1;
     }
-    char buf[8];
-    int n = snprintf(buf, sizeof(buf), "%d", gpio);
-    if (write(fd, buf, (size_t)n) < 0) {
-        log_error("display: gpio_export %d: %s", gpio, strerror(errno));
-        close(fd);
-        return -1;
-    }
-    close(fd);
-    usleep(10000); /* 10 ms — kernel needs time to create sysfs entries */
-    return 0;
+    return req.fd;
 }
 
-static int gpio_set_direction(int gpio, const char *dir) {
-    char path[64];
-    snprintf(path, sizeof(path), "/sys/class/gpio/gpio%d/direction", gpio);
-    int fd = open(path, O_WRONLY);
-    if (fd < 0) {
-        log_error("display: gpio direction %d: %s", gpio, strerror(errno));
-        return -1;
-    }
-    if (write(fd, dir, strlen(dir)) < 0) {
-        log_error("display: gpio direction write %d: %s", gpio, strerror(errno));
-        close(fd);
-        return -1;
-    }
-    close(fd);
-    return 0;
-}
-
-static int gpio_write(int gpio, int value) {
-    char path[64];
-    snprintf(path, sizeof(path), "/sys/class/gpio/gpio%d/value", gpio);
-    int fd = open(path, O_WRONLY);
-    if (fd < 0)
-        return -1;
-    const char *v = value ? "1" : "0";
-    int r = (int)write(fd, v, 1);
-    close(fd);
-    return (r < 0) ? -1 : 0;
-}
-
-static void gpio_unexport(int gpio) {
-    int fd = open("/sys/class/gpio/unexport", O_WRONLY);
-    if (fd < 0)
-        return;
-    char buf[8];
-    int n = snprintf(buf, sizeof(buf), "%d", gpio);
-    ssize_t r = write(fd, buf, (size_t)n);
-    (void)r; /* best-effort: failure here is non-fatal */
-    close(fd);
+static void gpio_set(int line_fd, int value)
+{
+    struct gpio_v2_line_values vals;
+    memset(&vals, 0, sizeof(vals));
+    vals.mask = 1ULL;
+    vals.bits = (uint64_t)(value ? 1 : 0);
+    if (ioctl(line_fd, GPIO_V2_LINE_SET_VALUES_IOCTL, &vals) < 0)
+        log_error("display: gpio_set: %s", strerror(errno));
 }
 
 /* -------------------------------------------------------------------------
  * Low-level SPI helpers
  * ---------------------------------------------------------------------- */
 
-/*
- * Send one byte as a COMMAND (DC low).
- * DC must be set LOW before the SPI transaction.
- */
-static void tft_write_cmd(uint8_t cmd) {
-    gpio_write(s_dc_gpio, 0); /* DC low = command */
+static void tft_write_cmd(uint8_t cmd)
+{
+    gpio_set(s_dc_fd, 0);
     struct spi_ioc_transfer tr = {
-        .tx_buf         = (unsigned long)&cmd,
-        .rx_buf         = 0,
-        .len            = 1,
-        .speed_hz       = TFT_SPI_HZ,
-        .bits_per_word  = 8,
-        .delay_usecs    = 0,
+        .tx_buf        = (unsigned long)&cmd,
+        .rx_buf        = 0,
+        .len           = 1,
+        .speed_hz      = TFT_SPI_HZ,
+        .bits_per_word = 8,
+        .delay_usecs   = 0,
     };
     if (ioctl(s_spi_fd, SPI_IOC_MESSAGE(1), &tr) < 0)
-        log_error("display: SPI cmd 0x%02X failed: %s", cmd, strerror(errno));
+        log_error("display: SPI cmd 0x%02X: %s", cmd, strerror(errno));
 }
 
-/*
- * Send one byte as DATA (DC high).
- */
-static void tft_write_data(uint8_t data) {
-    gpio_write(s_dc_gpio, 1); /* DC high = data */
+static void tft_write_data(uint8_t data)
+{
+    gpio_set(s_dc_fd, 1);
     struct spi_ioc_transfer tr = {
-        .tx_buf         = (unsigned long)&data,
-        .rx_buf         = 0,
-        .len            = 1,
-        .speed_hz       = TFT_SPI_HZ,
-        .bits_per_word  = 8,
-        .delay_usecs    = 0,
+        .tx_buf        = (unsigned long)&data,
+        .rx_buf        = 0,
+        .len           = 1,
+        .speed_hz      = TFT_SPI_HZ,
+        .bits_per_word = 8,
+        .delay_usecs   = 0,
     };
     if (ioctl(s_spi_fd, SPI_IOC_MESSAGE(1), &tr) < 0)
-        log_error("display: SPI data 0x%02X failed: %s", data, strerror(errno));
+        log_error("display: SPI data 0x%02X: %s", data, strerror(errno));
 }
 
-/*
- * Send a buffer of DATA bytes in one SPI transaction.
- * Caller must have already called tft_write_cmd() to set the register.
- */
-static void tft_write_buf(const uint8_t *buf, size_t len) {
-    gpio_write(s_dc_gpio, 1); /* DC high = data */
+static void tft_write_buf(const uint8_t *buf, size_t len)
+{
+    gpio_set(s_dc_fd, 1);
     struct spi_ioc_transfer tr = {
         .tx_buf        = (unsigned long)buf,
         .rx_buf        = 0,
@@ -200,18 +152,15 @@ static void tft_write_buf(const uint8_t *buf, size_t len) {
         .delay_usecs   = 0,
     };
     if (ioctl(s_spi_fd, SPI_IOC_MESSAGE(1), &tr) < 0)
-        log_error("display: SPI buf write failed: %s", strerror(errno));
+        log_error("display: SPI buf write: %s", strerror(errno));
 }
 
 /* -------------------------------------------------------------------------
  * Address window
  * ---------------------------------------------------------------------- */
 
-/*
- * Set the CASET/RASET window before a RAMWR pixel burst.
- * Coordinates are inclusive [x0,x1] x [y0,y1].
- */
-static void tft_set_window(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1) {
+static void tft_set_window(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1)
+{
     tft_write_cmd(ST7796_CASET);
     uint8_t ca[4] = {
         (uint8_t)(x0 >> 8), (uint8_t)(x0 & 0xFF),
@@ -230,66 +179,40 @@ static void tft_set_window(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1) {
 }
 
 /* -------------------------------------------------------------------------
- * ST7796S initialisation sequence
- * Derived from TFT_eSPI ST7796_Init.h (Bodmer, MIT) and cross-checked
- * against the Sitronix ST7796S datasheet register map.
+ * ST7796S init sequence
  * ---------------------------------------------------------------------- */
 
-static void tft_hw_reset(void) {
-    gpio_write(s_rst_gpio, 1);
-    usleep(10000);      /* 10 ms */
-    gpio_write(s_spi_fd, 0);
-    usleep(10000);      /* 10 ms — datasheet requires min 10 µs low pulse */
-    gpio_write(s_rst_gpio, 1);
-    usleep(120000);     /* 120 ms — wait for internal reset to complete */
+static void tft_hw_reset(void)
+{
+    gpio_set(s_rst_fd, 1); usleep(10000);
+    gpio_set(s_rst_fd, 0); usleep(10000);
+    gpio_set(s_rst_fd, 1); usleep(120000);
 }
 
 static void tft_init_sequence(void)
 {
-    /* Sleep out — must wait 120 ms before sending further commands */
-    tft_write_cmd(ST7796_SLPOUT);
-    usleep(120000);
+    tft_write_cmd(ST7796_SLPOUT); usleep(120000);
 
-    /* Enable extension command set (two-part unlock) */
     tft_write_cmd(ST7796_F0H); tft_write_data(0xC3);
     tft_write_cmd(ST7796_F0H); tft_write_data(0x96);
 
-    /* Memory access control: landscape 480x320, RGB */
     tft_write_cmd(ST7796_MADCTL); tft_write_data(ST7796_MADCTL_LANDSCAPE);
-
-    /* Pixel format: 16-bit RGB565 */
     tft_write_cmd(ST7796_COLMOD); tft_write_data(ST7796_COLMOD_16BIT);
 
-    /* Display inversion: 1-dot */
     tft_write_cmd(ST7796_B4H); tft_write_data(0x01);
 
-    /* Display function control */
     tft_write_cmd(ST7796_B6H);
-    tft_write_data(0x80);
-    tft_write_data(0x02);
-    tft_write_data(0x3B);
+    tft_write_data(0x80); tft_write_data(0x02); tft_write_data(0x3B);
 
-    /* Display pump ratio */
     tft_write_cmd(ST7796_E8H);
-    tft_write_data(0x40);
-    tft_write_data(0x8A);
-    tft_write_data(0x00);
-    tft_write_data(0x00);
-    tft_write_data(0x29);
-    tft_write_data(0x19);
-    tft_write_data(0xA5);
-    tft_write_data(0x33);
+    tft_write_data(0x40); tft_write_data(0x8A); tft_write_data(0x00);
+    tft_write_data(0x00); tft_write_data(0x29); tft_write_data(0x19);
+    tft_write_data(0xA5); tft_write_data(0x33);
 
-    /* Power control 2 */
     tft_write_cmd(ST7796_C1H); tft_write_data(0x06);
-
-    /* Power control 3 */
     tft_write_cmd(ST7796_C2H); tft_write_data(0xA7);
-
-    /* VCOM control */
     tft_write_cmd(ST7796_C5H); tft_write_data(0x18);
 
-    /* Positive gamma */
     tft_write_cmd(ST7796_E0H);
     tft_write_data(0x0F); tft_write_data(0x09); tft_write_data(0x0B);
     tft_write_data(0x06); tft_write_data(0x04); tft_write_data(0x15);
@@ -297,7 +220,6 @@ static void tft_init_sequence(void)
     tft_write_data(0x3C); tft_write_data(0x17); tft_write_data(0x14);
     tft_write_data(0x18); tft_write_data(0x1B); tft_write_data(0x00);
 
-    /* Negative gamma */
     tft_write_cmd(ST7796_E1H);
     tft_write_data(0x0F); tft_write_data(0x09); tft_write_data(0x0B);
     tft_write_data(0x06); tft_write_data(0x04); tft_write_data(0x03);
@@ -305,23 +227,15 @@ static void tft_init_sequence(void)
     tft_write_data(0x3B); tft_write_data(0x16); tft_write_data(0x14);
     tft_write_data(0x17); tft_write_data(0x1B); tft_write_data(0x00);
 
-    /* Lock extension commands */
     tft_write_cmd(ST7796_F0H); tft_write_data(0xC3);
     tft_write_cmd(ST7796_F0H); tft_write_data(0x96);
 
-    /* Normal display mode */
-    tft_write_cmd(ST7796_NORON);
-    usleep(10000);
-
-    /* Display on */
-    tft_write_cmd(ST7796_DISPON);
-    usleep(20000);
+    tft_write_cmd(ST7796_NORON);  usleep(10000);
+    tft_write_cmd(ST7796_DISPON); usleep(20000);
 }
 
 /* -------------------------------------------------------------------------
- * Built-in 5x7 bitmap font
- * ASCII 0x20 (space) through 0x7E (~).  Each glyph is 5 bytes wide,
- * one byte per column, LSB = top pixel.
+ * Built-in 5x7 bitmap font (ASCII 0x20–0x7E)
  * ---------------------------------------------------------------------- */
 
 static const uint8_t s_font5x7[][5] = {
@@ -426,81 +340,75 @@ static const uint8_t s_font5x7[][5] = {
  * Public API
  * ---------------------------------------------------------------------- */
 
-gm_status_t display_open(const char *spi_device, int dc_gpio, int rst_gpio) {
-    s_dc_gpio  = dc_gpio;
-    s_rst_gpio = rst_gpio;
-
-    /* --- Export and configure GPIOs ------------------------------------ */
-    if (gpio_export(dc_gpio) < 0 || gpio_set_direction(dc_gpio, "out") < 0) {
-        log_error("display: failed to configure DC GPIO %d", dc_gpio);
-        return GM_ERR_IO;
-    }
-    if (gpio_export(rst_gpio) < 0 || gpio_set_direction(rst_gpio, "out") < 0) {
-        log_error("display: failed to configure RST GPIO %d", rst_gpio);
+gm_status_t display_open(const char *spi_device, int dc_gpio, int rst_gpio)
+{
+    /* Open gpiochip0 */
+    s_gpio_fd = open(TFT_GPIOCHIP, O_RDONLY);
+    if (s_gpio_fd < 0) {
+        log_error("display: open %s: %s", TFT_GPIOCHIP, strerror(errno));
         return GM_ERR_IO;
     }
 
-    /* --- Open spidev --------------------------------------------------- */
+    /* Request DC and RST as outputs, initially high */
+    s_dc_fd  = gpio_request_output(s_gpio_fd, (unsigned int)dc_gpio,  1);
+    s_rst_fd = gpio_request_output(s_gpio_fd, (unsigned int)rst_gpio, 1);
+    if (s_dc_fd < 0 || s_rst_fd < 0) {
+        log_error("display: failed to acquire GPIO lines");
+        close(s_gpio_fd); s_gpio_fd = -1;
+        return GM_ERR_IO;
+    }
+
+    /* Open spidev */
     s_spi_fd = open(spi_device, O_RDWR);
     if (s_spi_fd < 0) {
         log_error("display: open %s: %s", spi_device, strerror(errno));
+        close(s_dc_fd);  s_dc_fd  = -1;
+        close(s_rst_fd); s_rst_fd = -1;
+        close(s_gpio_fd); s_gpio_fd = -1;
         return GM_ERR_IO;
     }
 
-    /* SPI mode 0: CPOL=0, CPHA=0 */
     uint8_t mode = SPI_MODE_0;
     if (ioctl(s_spi_fd, SPI_IOC_WR_MODE, &mode) < 0) {
         log_error("display: SPI_IOC_WR_MODE: %s", strerror(errno));
-        close(s_spi_fd); s_spi_fd = -1;
-        return GM_ERR_IO;
+        goto err;
     }
-
-    /* 8 bits per word */
     uint8_t bits = 8;
     if (ioctl(s_spi_fd, SPI_IOC_WR_BITS_PER_WORD, &bits) < 0) {
         log_error("display: SPI_IOC_WR_BITS_PER_WORD: %s", strerror(errno));
-        close(s_spi_fd); s_spi_fd = -1;
-        return GM_ERR_IO;
+        goto err;
     }
-
-    /* Max clock speed */
     uint32_t speed = TFT_SPI_HZ;
     if (ioctl(s_spi_fd, SPI_IOC_WR_MAX_SPEED_HZ, &speed) < 0) {
         log_error("display: SPI_IOC_WR_MAX_SPEED_HZ: %s", strerror(errno));
-        close(s_spi_fd); s_spi_fd = -1;
-        return GM_ERR_IO;
+        goto err;
     }
 
-    /* --- Hardware reset + init sequence -------------------------------- */
     tft_hw_reset();
     tft_init_sequence();
-
-    /* Clear display to black */
     display_fill(TFT_BLACK);
 
     log_info("display: ST7796S ready on %s (DC=%d RST=%d)",
              spi_device, dc_gpio, rst_gpio);
     return GM_OK;
+
+err:
+    close(s_spi_fd);  s_spi_fd  = -1;
+    close(s_dc_fd);   s_dc_fd   = -1;
+    close(s_rst_fd);  s_rst_fd  = -1;
+    close(s_gpio_fd); s_gpio_fd = -1;
+    return GM_ERR_IO;
 }
 
 void display_fill(uint16_t color)
 {
-    if (s_spi_fd < 0)
-        return;
+    if (s_spi_fd < 0) return;
 
     tft_set_window(0, 0, TFT_WIDTH - 1, TFT_HEIGHT - 1);
 
-    /*
-     * Build a line buffer of 480 pixels (960 bytes) and send row by row.
-     * This avoids a 300 KB stack allocation while keeping SPI transactions
-     * large enough to amortise the per-ioctl overhead.
-     */
-    const uint32_t stride = TFT_WIDTH * 2u;
+    uint32_t stride = TFT_WIDTH * 2u;
     uint8_t *line = malloc(stride);
-    if (!line) {
-        log_error("display: fill: malloc failed");
-        return;
-    }
+    if (!line) { log_error("display: fill: malloc failed"); return; }
 
     uint8_t hi = (uint8_t)(color >> 8);
     uint8_t lo = (uint8_t)(color & 0xFF);
@@ -509,7 +417,7 @@ void display_fill(uint16_t color)
         line[i + 1] = lo;
     }
 
-    gpio_write(s_dc_gpio, 1); /* DC high = data */
+    gpio_set(s_dc_fd, 1);
     for (uint16_t row = 0; row < TFT_HEIGHT; row++) {
         struct spi_ioc_transfer tr = {
             .tx_buf        = (unsigned long)line,
@@ -520,7 +428,7 @@ void display_fill(uint16_t color)
             .delay_usecs   = 0,
         };
         if (ioctl(s_spi_fd, SPI_IOC_MESSAGE(1), &tr) < 0) {
-            log_error("display: fill row %d failed: %s", row, strerror(errno));
+            log_error("display: fill row %d: %s", row, strerror(errno));
             break;
         }
     }
@@ -529,8 +437,7 @@ void display_fill(uint16_t color)
 
 void display_draw_pixel(uint16_t x, uint16_t y, uint16_t color)
 {
-    if (s_spi_fd < 0 || x >= TFT_WIDTH || y >= TFT_HEIGHT)
-        return;
+    if (s_spi_fd < 0 || x >= TFT_WIDTH || y >= TFT_HEIGHT) return;
     tft_set_window(x, y, x, y);
     uint8_t px[2] = { (uint8_t)(color >> 8), (uint8_t)(color & 0xFF) };
     tft_write_buf(px, 2);
@@ -539,11 +446,8 @@ void display_draw_pixel(uint16_t x, uint16_t y, uint16_t color)
 void display_fill_rect(uint16_t x, uint16_t y, uint16_t w, uint16_t h,
                        uint16_t color)
 {
-    if (s_spi_fd < 0 || w == 0 || h == 0)
-        return;
-    /* Clamp to display bounds */
-    if (x >= TFT_WIDTH || y >= TFT_HEIGHT)
-        return;
+    if (s_spi_fd < 0 || w == 0 || h == 0) return;
+    if (x >= TFT_WIDTH || y >= TFT_HEIGHT) return;
     if (x + w > TFT_WIDTH)  w = (uint16_t)(TFT_WIDTH  - x);
     if (y + h > TFT_HEIGHT) h = (uint16_t)(TFT_HEIGHT - y);
 
@@ -560,7 +464,7 @@ void display_fill_rect(uint16_t x, uint16_t y, uint16_t w, uint16_t h,
         line[i + 1] = lo;
     }
 
-    gpio_write(s_dc_gpio, 1);
+    gpio_set(s_dc_fd, 1);
     for (uint16_t row = 0; row < h; row++) {
         struct spi_ioc_transfer tr = {
             .tx_buf        = (unsigned long)line,
@@ -578,20 +482,16 @@ void display_fill_rect(uint16_t x, uint16_t y, uint16_t w, uint16_t h,
 void display_draw_char(uint16_t x, uint16_t y, char c,
                        uint16_t fg, uint16_t bg, uint8_t scale)
 {
-    if (s_spi_fd < 0 || scale == 0)
-        return;
+    if (s_spi_fd < 0 || scale == 0) return;
 
     uint8_t idx = (uint8_t)c;
-    if (idx < 0x20 || idx > 0x7E)
-        idx = 0x20; /* map out-of-range to space */
+    if (idx < 0x20 || idx > 0x7E) idx = 0x20;
     const uint8_t *glyph = s_font5x7[idx - 0x20];
 
-    /* Each column of the 5x7 font */
     for (uint8_t col = 0; col < TFT_FONT_W; col++) {
         uint8_t coldata = glyph[col];
         for (uint8_t row = 0; row < TFT_FONT_H; row++) {
             uint16_t color = (coldata & (1u << row)) ? fg : bg;
-            /* Draw scale×scale block for each bit */
             display_fill_rect(
                 (uint16_t)(x + col * scale),
                 (uint16_t)(y + row * scale),
@@ -603,29 +503,20 @@ void display_draw_char(uint16_t x, uint16_t y, char c,
 void display_draw_string(uint16_t x, uint16_t y, const char *s,
                          uint16_t fg, uint16_t bg, uint8_t scale)
 {
-    if (!s || scale == 0)
-        return;
+    if (!s || scale == 0) return;
     uint16_t cx = x;
     while (*s) {
         display_draw_char(cx, y, *s, fg, bg, scale);
-        cx = (uint16_t)(cx + (TFT_FONT_W + 1) * scale); /* 1px column gap */
+        cx = (uint16_t)(cx + (TFT_FONT_W + 1) * scale);
         s++;
     }
 }
 
 void display_close(void)
 {
-    if (s_spi_fd >= 0) {
-        close(s_spi_fd);
-        s_spi_fd = -1;
-    }
-    if (s_dc_gpio >= 0) {
-        gpio_unexport(s_dc_gpio);
-        s_dc_gpio = -1;
-    }
-    if (s_rst_gpio >= 0) {
-        gpio_unexport(s_rst_gpio);
-        s_rst_gpio = -1;
-    }
+    if (s_spi_fd  >= 0) { close(s_spi_fd);  s_spi_fd  = -1; }
+    if (s_rst_fd  >= 0) { close(s_rst_fd);  s_rst_fd  = -1; }
+    if (s_dc_fd   >= 0) { close(s_dc_fd);   s_dc_fd   = -1; }
+    if (s_gpio_fd >= 0) { close(s_gpio_fd); s_gpio_fd = -1; }
     log_info("display: closed");
 }
