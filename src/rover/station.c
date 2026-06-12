@@ -11,7 +11,8 @@
  *   2. Radio collector (SiK → RTCM3):  forwards raw correction frames
  *      back to the UM980 via serial_write() to close the RTK loop.
  *
- * Blocks until SIGINT or SIGTERM, then cleans up in reverse order.
+ * After collectors start, opens the TFT display and runs a 2 Hz UI
+ * update loop until SIGINT or SIGTERM, then cleans up in reverse order.
  */
 
 #define _GNU_SOURCE
@@ -22,12 +23,26 @@
 #include "gnss/um980.h"
 #include "stream/radio.h"
 #include "collector/collector.h"
+#include "ui/tft/display.h"
+#include "ui/tft/screen.h"
 #include "geomark.h"
 
 #include <pthread.h>
 #include <signal.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
+
+/* --------------------------------------------------------------------------
+ * Display hardware defaults — matched to confirmed wiring
+ * ----------------------------------------------------------------------- */
+
+#define ROVER_SPI_DEVICE  "/dev/spidev0.0"
+#define ROVER_DC_GPIO     24
+#define ROVER_RST_GPIO    25
+
+/* UI refresh interval: 500 ms = 2 Hz */
+#define UI_INTERVAL_MS    500u
 
 /* --------------------------------------------------------------------------
  * Signal handling
@@ -42,13 +57,13 @@ static void handle_signal(int sig)
 }
 
 /* --------------------------------------------------------------------------
- * Shared fix state — written by GNSS callback, readable by future UI
+ * Shared fix state — written by GNSS callback, readable by UI loop
  * ----------------------------------------------------------------------- */
 
 typedef struct {
     gm_position_t position;
     pthread_mutex_t mutex;
-    int valid; /* 1 once first fix received */
+    int valid;
 } RoverFixState;
 
 /* --------------------------------------------------------------------------
@@ -75,15 +90,12 @@ static uint32_t monotonic_ms(void)
 
 static void gnss_callback(const CollectorFrame *frame, void *user)
 {
-    if (frame->type != COLLECTOR_FRAME_NMEA) {
+    if (frame->type != COLLECTOR_FRAME_NMEA)
         return;
-    }
 
-    /* Only process GGA — it carries position, altitude, HDOP, sats, quality */
     const NmeaGga *gga = &frame->decoded.gga;
-    if (!gga->valid) {
+    if (!gga->valid)
         return;
-    }
 
     RoverFixState *state = (RoverFixState *)user;
 
@@ -117,13 +129,11 @@ typedef struct {
 
 static void radio_callback(const CollectorFrame *frame, void *user)
 {
-    if (frame->type != COLLECTOR_FRAME_RTCM3) {
+    if (frame->type != COLLECTOR_FRAME_RTCM3)
         return;
-    }
 
     RadioCallbackCtx *ctx = (RadioCallbackCtx *)user;
 
-    /* Write the raw RTCM3 frame directly to the UM980 serial port */
     SerialResult r = serial_write(&ctx->um980->serial, frame->data, frame->len);
     if (r != SERIAL_OK) {
         log_error("rover: serial_write RTCM3 to UM980 failed (%d), msg %d dropped",
@@ -147,9 +157,8 @@ gm_status_t rover_station_run(const char *config_path)
         config_defaults(&cfg);
     }
 
-    if (cfg.log_file[0] != '\0') {
+    if (cfg.log_file[0] != '\0')
         log_init(cfg.log_file);
-    }
 
     log_info("rover: serial=%s baud=%d  radio=%s baud=%d",
              cfg.serial_device, cfg.serial_baud,
@@ -194,7 +203,7 @@ gm_status_t rover_station_run(const char *config_path)
     }
     log_info("rover: radio opened on %s", cfg.radio_device);
 
-    /* --- GNSS collector (UM980 → NMEA → fix state) --------------------- */
+    /* --- GNSS collector ------------------------------------------------- */
     Collector gnss_collector;
     memset(&gnss_collector, 0, sizeof(gnss_collector));
 
@@ -209,7 +218,7 @@ gm_status_t rover_station_run(const char *config_path)
     }
     log_info("rover: GNSS collector running");
 
-    /* --- Radio collector (SiK → RTCM3 → UM980) ------------------------- */
+    /* --- Radio collector ------------------------------------------------ */
     RadioCallbackCtx radio_ctx = { .um980 = &um980 };
     Collector radio_collector;
     memset(&radio_collector, 0, sizeof(radio_collector));
@@ -226,6 +235,16 @@ gm_status_t rover_station_run(const char *config_path)
     }
     log_info("rover: radio collector running");
 
+    /* --- TFT display ---------------------------------------------------- */
+    gm_status_t ds = display_open(ROVER_SPI_DEVICE, ROVER_DC_GPIO, ROVER_RST_GPIO);
+    if (ds != GM_OK) {
+        /* Non-fatal: log and continue without UI */
+        log_warn("rover: display_open failed — running headless");
+    } else {
+        screen_init();
+        log_info("rover: TFT display ready");
+    }
+
     log_info("rover: RTK loop active — waiting for fixes");
 
     /* --- Signal handling ------------------------------------------------ */
@@ -236,13 +255,29 @@ gm_status_t rover_station_run(const char *config_path)
     sigaction(SIGINT,  &sa, NULL);
     sigaction(SIGTERM, &sa, NULL);
 
+    /* --- UI loop at 2 Hz ----------------------------------------------- */
     while (g_running) {
-        pause();
+        /* Take a snapshot of the fix state under the mutex */
+        gm_position_t snap;
+        int valid;
+        pthread_mutex_lock(&fix_state.mutex);
+        snap  = fix_state.position;
+        valid = fix_state.valid;
+        pthread_mutex_unlock(&fix_state.mutex);
+
+        /* Update the screen if display is available */
+        if (ds == GM_OK)
+            screen_update(&snap, (bool)valid, monotonic_ms());
+
+        /* Sleep 500 ms — interruptible by signal */
+        usleep(UI_INTERVAL_MS * 1000u);
     }
 
     log_info("rover: shutting down");
 
     /* --- Cleanup (reverse init order) ---------------------------------- */
+    if (ds == GM_OK)
+        display_close();
     collector_stop(&radio_collector);
     collector_stop(&gnss_collector);
     radio_close(&radio);

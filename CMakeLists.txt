@@ -38,6 +38,7 @@ set(GEOMARK_SOURCES
     src/collector/export.c
     src/ui/tft/display.c
     src/ui/tft/touch.c
+    src/ui/tft/screen.c
     src/util/config.c
     src/util/log.c
     src/util/thread.c
