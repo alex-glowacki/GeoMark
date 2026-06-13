@@ -1,6 +1,6 @@
 /**
  * @file rover/station.c
- * @brief Rover station implementation.
+ * @brief Rover station implementation (pole-top, headless).
  *
  * Opens the UM980 in rover mode and the SiK radio, then runs two
  * independent collector threads:
@@ -11,8 +11,8 @@
  *   2. Radio collector (SiK → RTCM3):  forwards raw correction frames
  *      back to the UM980 via serial_write() to close the RTK loop.
  *
- * After collectors start, opens the TFT display and runs a 2 Hz UI
- * update loop until SIGINT or SIGTERM, then cleans up in reverse order.
+ * After collectors start, starts the TCP stream server and runs a 2 Hz
+ * broadcast loop until SIGINT or SIGTERM, then cleans up in reverse order.
  */
 
 #define _GNU_SOURCE
@@ -23,8 +23,8 @@
 #include "gnss/um980.h"
 #include "stream/radio.h"
 #include "collector/collector.h"
-#include "ui/tft/display.h"
-#include "ui/tft/screen.h"
+#include "net/stream_server.h"
+#include "net/rover_packet.h"
 #include "geomark.h"
 
 #include <pthread.h>
@@ -32,14 +32,6 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
-
-/* --------------------------------------------------------------------------
- * Display hardware defaults — matched to confirmed wiring
- * ----------------------------------------------------------------------- */
-
-#define ROVER_SPI_DEVICE  "/dev/spidev0.0"
-#define ROVER_DC_GPIO     24
-#define ROVER_RST_GPIO    25
 
 /* UI refresh interval: 500 ms = 2 Hz */
 #define UI_INTERVAL_MS    500u
@@ -57,13 +49,13 @@ static void handle_signal(int sig)
 }
 
 /* --------------------------------------------------------------------------
- * Shared fix state — written by GNSS callback, readable by UI loop
+ * Shared fix state — written by GNSS callback, read by broadcast loop
  * ----------------------------------------------------------------------- */
 
 typedef struct {
-    gm_position_t position;
+    gm_position_t   position;
     pthread_mutex_t mutex;
-    int valid;
+    int             valid;
 } RoverFixState;
 
 /* --------------------------------------------------------------------------
@@ -235,14 +227,13 @@ gm_status_t rover_station_run(const char *config_path)
     }
     log_info("rover: radio collector running");
 
-    /* --- TFT display ---------------------------------------------------- */
-    gm_status_t ds = display_open(ROVER_SPI_DEVICE, ROVER_DC_GPIO, ROVER_RST_GPIO);
-    if (ds != GM_OK) {
-        /* Non-fatal: log and continue without UI */
-        log_warn("rover: display_open failed — running headless");
+    /* --- Stream server -------------------------------------------------- */
+    gm_status_t ss = stream_server_start();
+    if (ss != GM_OK) {
+        /* Non-fatal: log and continue — handheld just won't receive data */
+        log_warn("rover: stream_server_start failed — running without WiFi stream");
     } else {
-        screen_init();
-        log_info("rover: TFT display ready");
+        log_info("rover: stream server listening on port %d", ROVER_PACKET_PORT);
     }
 
     log_info("rover: RTK loop active — waiting for fixes");
@@ -255,7 +246,7 @@ gm_status_t rover_station_run(const char *config_path)
     sigaction(SIGINT,  &sa, NULL);
     sigaction(SIGTERM, &sa, NULL);
 
-    /* --- UI loop at 2 Hz ----------------------------------------------- */
+    /* --- Broadcast loop at 2 Hz ---------------------------------------- */
     while (g_running) {
         /* Take a snapshot of the fix state under the mutex */
         gm_position_t snap;
@@ -265,19 +256,32 @@ gm_status_t rover_station_run(const char *config_path)
         valid = fix_state.valid;
         pthread_mutex_unlock(&fix_state.mutex);
 
-        /* Update the screen if display is available */
-        if (ds == GM_OK)
-            screen_update(&snap, (bool)valid, monotonic_ms());
+        /* Build and broadcast the status packet */
+        if (ss == GM_OK) {
+            RoverStatusPacket pkt;
+            memset(&pkt, 0, sizeof(pkt));
+            pkt.magic        = ROVER_PACKET_MAGIC;
+            pkt.lat          = snap.latitude;
+            pkt.lon          = snap.longitude;
+            pkt.alt_msl      = snap.altitude;
+            pkt.hdop         = snap.hdop;
+            pkt.fix_quality  = (uint8_t)snap.fix_type;
+            pkt.num_sats     = snap.satellites;
+            pkt.age_of_fix_s = (snap.timestamp_ms > 0)
+                               ? (uint16_t)((monotonic_ms() - snap.timestamp_ms) / 1000u)
+                               : 0u;
+            pkt.valid        = (uint8_t)valid;
+            stream_server_broadcast(&pkt);
+        }
 
-        /* Sleep 500 ms — interruptible by signal */
         usleep(UI_INTERVAL_MS * 1000u);
     }
 
     log_info("rover: shutting down");
 
     /* --- Cleanup (reverse init order) ---------------------------------- */
-    if (ds == GM_OK)
-        display_close();
+    if (ss == GM_OK)
+        stream_server_stop();
     collector_stop(&radio_collector);
     collector_stop(&gnss_collector);
     radio_close(&radio);

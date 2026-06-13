@@ -36,15 +36,18 @@ set(GEOMARK_SOURCES
     src/collector/points.c
     src/collector/coords.c
     src/collector/export.c
+    src/net/stream_server.c
+    src/net/stream_client.c
     src/ui/tft/display.c
     src/ui/tft/touch.c
     src/ui/tft/screen.c
+    src/ui/client.c
     src/util/config.c
     src/util/log.c
     src/util/thread.c
 )
 add_executable(geomark ${GEOMARK_SOURCES})
-# Link pthreads (required for util/thread.c)
+# Link pthreads (required for util/thread.c, stream_server.c, stream_client.c)
 find_package(Threads REQUIRED)
 target_link_libraries(geomark PRIVATE Threads::Threads)
 # Tests

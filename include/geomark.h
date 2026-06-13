@@ -26,6 +26,7 @@ typedef enum {
     GEOMARK_MODE_UNKNOWN = 0,
     GEOMARK_MODE_BASE,
     GEOMARK_MODE_ROVER,
+    GEOMARK_MODE_UI, /* Handheld Pi 5: receives packets, drives TFT */
 } geomark_mode_t;
 
 /* -------------------------------------------------------------------------
@@ -61,7 +62,7 @@ typedef enum {
 typedef struct {
     double latitude;  /* degrees, WGS84 */
     double longitude; /* degrees, WGS84 */
-    double altitude;  /* metres above ellipsoid */
+    double altitude;  /* meters above ellipsoid */
     float hdop;
     uint8_t satellites;
     gm_fix_type_t fix_type;
