@@ -4,20 +4,19 @@
  *
  * Command protocol notes:
  *   - Every command is terminated with \r\n before sending.
-*   - The UM980 response format observed on hardware:
+ *   - The UM980 response format observed on hardware:
  *       "$command,<CMD>,response: OK*<checksum>\r\n"   — accepted
  *       "$command,<CMD>,response: ERROR*<checksum>\r\n" — rejected
  *   - We scan for the substring "OK" or "ERROR" (not ",OK"/",ERROR")
  *     to be robust to response format variations.
- *     is short (<1 m) and bit errors are negligible for ASCII ACKs.
  *   - We do not call SAVECONFIG. GeoMark re-initializes the UM980 on
  *     every startup so the active config always matches the binary.
  */
 
-#include "stream/serial.h"
 #define _GNU_SOURCE
 
 #include "um980.h"
+#include "stream/serial.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -96,7 +95,7 @@ SerialResult um980_send_command(Um980 *u, const char *cmd) {
     size_t cmd_len = strlen(cmd);
 
     if (cmd_len + 2 >= sizeof(packet)) {
-        return SERIAL_ERR_ARG; /* command to long */
+        return SERIAL_ERR_ARG; /* command too long */
     }
 
     memcpy(packet, cmd, cmd_len);
@@ -106,19 +105,19 @@ SerialResult um980_send_command(Um980 *u, const char *cmd) {
 
     /* Write the command */
     SerialResult wr = serial_write(&u->serial, (const uint8_t *)packet, cmd_len + 2);
-
     if (wr != SERIAL_OK) {
         return wr;
     }
 
     /*
-     * Read response lines until we see ",OK" or ",ERROR", or the port
-     * times out. The UM980 sometimes emits unsolicited NMEA lines before
-     * the ACK, so we loop rather than reading just one line.
+     * Read response lines until we see "OK" or "ERROR", or the port
+     * times out. The UM980 streams unsolicited NMEA lines before the ACK,
+     * so we scan up to 64 lines to ensure the response is not missed
+     * regardless of NMEA output rate.
      */
     char resp[RESP_BUF_SIZE];
 
-    for (int attempt = 0; attempt < 16; attempt++) {
+    for (int attempt = 0; attempt < 64; attempt++) {
         int n = read_line(&u->serial, resp, sizeof(resp));
 
         if (n == SERIAL_ERR_TIMEOUT || n == 0) {
@@ -137,7 +136,7 @@ SerialResult um980_send_command(Um980 *u, const char *cmd) {
         /* else: unsolicited line (NMEA etc.) — keep reading */
     }
 
-    return SERIAL_ERR_TIMEOUT; /* gave up after 16 lines */
+    return SERIAL_ERR_TIMEOUT; /* gave up after 64 lines */
 }
 
 /* -------------------------------------------------------------------------
@@ -175,7 +174,7 @@ SerialResult um980_init_base(Um980 *u) {
     SEND(u, "MODE BASE");
     SEND(u, "CONFIG SIGNALGROUP 2");
     SEND(u, "RTCM1005 30");
-    SEND(u, "RTCM1007 1");
+    SEND(u, "RTCM1077 1");
     SEND(u, "RTCM1087 1");
     SEND(u, "RTCM1097 1");
     SEND(u, "RTCM1127 1");
