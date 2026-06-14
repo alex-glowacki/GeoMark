@@ -12,7 +12,9 @@
  *   - We do not call SAVECONFIG. GeoMark re-initializes the UM980 on
  *     every startup so the active config always matches the binary.
  *   - UNLOG is sent as the first init command to silence continuous NMEA
- *     output from a previous session before any other commands are sent.
+ *     output from a previous session. After UNLOG succeeds, a 200 ms
+ *     delay and TCIFLUSH ensure the RX buffer is clean before subsequent
+ *     commands are sent.
  */
 
 #define _GNU_SOURCE
@@ -24,6 +26,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <termios.h>
+#include <unistd.h>
 
 /* -------------------------------------------------------------------------
  * Internal helpers
@@ -94,9 +97,6 @@ SerialResult um980_send_command(Um980 *u, const char *cmd) {
     packet[cmd_len + 1] = '\n';
     packet[cmd_len + 2] = '\0';
 
-    /* Flush RX buffer before sending — discard any backlogged NMEA */
-    tcflush(u->serial.fd, TCIFLUSH);
-
     SerialResult wr = serial_write(&u->serial, (const uint8_t *)packet, cmd_len + 2);
     if (wr != SERIAL_OK) {
         return wr;
@@ -104,7 +104,7 @@ SerialResult um980_send_command(Um980 *u, const char *cmd) {
 
     /*
      * Read response lines until we see "OK" or "ERROR".
-     * After tcflush the buffer is clean so 64 lines is sufficient.
+     * 64 lines is sufficient once UNLOG has silenced the NMEA stream.
      */
     char resp[RESP_BUF_SIZE];
 
@@ -145,6 +145,10 @@ SerialResult um980_init_base(Um980 *u) {
     }
 
     SEND(u, "UNLOG");
+    /* Wait for UM980 to stop streaming, then flush residual RX bytes */
+    usleep(200000);
+    tcflush(u->serial.fd, TCIFLUSH);
+
     SEND(u, "MODE BASE");
     SEND(u, "CONFIG SIGNALGROUP 2");
     SEND(u, "RTCM1005 30");
@@ -166,6 +170,10 @@ SerialResult um980_init_rover(Um980 *u) {
     }
 
     SEND(u, "UNLOG");
+    /* Wait for UM980 to stop streaming, then flush residual RX bytes */
+    usleep(200000);
+    tcflush(u->serial.fd, TCIFLUSH);
+
     SEND(u, "MODE ROVER");
     SEND(u, "CONFIG SIGNALGROUP 2");
     SEND(u, "GPGGA 0.2");
