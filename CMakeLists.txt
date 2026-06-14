@@ -38,9 +38,13 @@ set(GEOMARK_SOURCES
     src/collector/export.c
     src/net/stream_server.c
     src/net/stream_client.c
+    src/survey/survey.c
+    src/survey/codelist.c
+    src/survey/export.c
     src/ui/tft/display.c
     src/ui/tft/touch.c
     src/ui/tft/screen.c
+    src/ui/survey_screen.c
     src/ui/client.c
     src/util/config.c
     src/util/log.c

@@ -1,0 +1,32 @@
+# GeoMark point code list
+# Format: CODE,Description
+# One entry per line. Lines starting with # are comments.
+# Edit this file and copy to /media/usb/geomark/point_codes.txt on your USB stick.
+# Codes are automatically upper-cased on load.
+
+CONC,Concrete
+ASP,Asphalt
+GRVL,Gravel
+CURB,Curb
+EP,Edge of pavement
+BM,Benchmark
+MON,Monument
+TREE,Tree
+FENCE,Fence line
+BLDG,Building corner
+INV,Pipe invert
+RIM,Manhole rim
+CB,Catch basin
+HYD,Fire hydrant
+ESMT,Easement
+ROW,Right of way
+CL,Centerline
+EOP,Edge of pavement
+SHLDR,Shoulder
+DITCH,Ditch
+SWALE,Swale
+WV,Water valve
+GV,Gas valve
+PP,Power pole
+LP,Light pole
+SP,Sign post
