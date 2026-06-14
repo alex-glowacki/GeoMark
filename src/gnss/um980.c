@@ -71,7 +71,7 @@ static SerialResult send_unlog(Um980 *u)
     SerialResult r = serial_write(&u->serial, (const uint8_t *)cmd, 7);
     if (r != SERIAL_OK)
         return r;
-    usleep(300000);  /* 300 ms — UM980 stops streaming well within this */
+    usleep(2000000);  /* 2000 ms — UM980 stops streaming well within this */
     tcflush(u->serial.fd, TCIFLUSH);
     return SERIAL_OK;
 }
