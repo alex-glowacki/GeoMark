@@ -59,18 +59,11 @@ SerialResult serial_open(SerialPort *port, const char *device, int baud, int tim
      * O_NONBLOCK is cleared immediately after open() so that subsequent
      * reads and writes use blocking I/O managed by select().
      */
-    int fd = open(device, O_RDWR | O_NOCTTY | O_NONBLOCK | O_CLOEXEC);
+    int fd = open(device, O_RDWR | O_NOCTTY | O_CLOEXEC);
     if (fd == -1) {
         port->fd = -1;
         port->baud = 0;
         return SERIAL_ERR_OPEN;
-    }
-
-    /* Clear O_NONBLOCK — blocking I/O after open, timeouts via select() */
-    int fl = fcntl(fd, F_GETFL, 0);
-    if (fl == -1 || fcntl(fd, F_SETFL, fl & ~O_NONBLOCK) == -1) {
-        close(fd);
-        return SERIAL_ERR_IO;
     }
 
     struct termios tty;
