@@ -11,10 +11,9 @@
  *     to be robust to response format variations.
  *   - We do not call SAVECONFIG. GeoMark re-initializes the UM980 on
  *     every startup so the active config always matches the binary.
- *   - UNLOG is sent as the first init command to silence continuous NMEA
- *     output from a previous session. After UNLOG succeeds, a 200 ms
- *     delay and TCIFLUSH ensure the RX buffer is clean before subsequent
- *     commands are sent.
+ *   - UNLOG is sent first without waiting for OK — we simply wait 300ms
+ *     for the stream to stop then flush, guaranteeing a clean channel
+ *     for all subsequent commands regardless of prior output rate.
  */
 
 #define _GNU_SOURCE
@@ -57,6 +56,24 @@ static int read_line(SerialPort *port, char *out, size_t out_size) {
 
     out[pos] = '\0';
     return (int)pos;
+}
+
+/**
+ * @brief Send UNLOG to silence all UM980 output.
+ *
+ * Does not wait for the OK response — instead waits 300 ms for the
+ * stream to stop then flushes the RX buffer. This guarantees a clean
+ * channel regardless of how fast the UM980 was streaming.
+ */
+static SerialResult send_unlog(Um980 *u)
+{
+    const char *cmd = "UNLOG\r\n";
+    SerialResult r = serial_write(&u->serial, (const uint8_t *)cmd, 7);
+    if (r != SERIAL_OK)
+        return r;
+    usleep(300000);  /* 300 ms — UM980 stops streaming well within this */
+    tcflush(u->serial.fd, TCIFLUSH);
+    return SERIAL_OK;
 }
 
 /* -------------------------------------------------------------------------
@@ -102,10 +119,6 @@ SerialResult um980_send_command(Um980 *u, const char *cmd) {
         return wr;
     }
 
-    /*
-     * Read response lines until we see "OK" or "ERROR".
-     * 64 lines is sufficient once UNLOG has silenced the NMEA stream.
-     */
     char resp[RESP_BUF_SIZE];
 
     for (int attempt = 0; attempt < 64; attempt++) {
@@ -144,10 +157,8 @@ SerialResult um980_init_base(Um980 *u) {
         return SERIAL_ERR_ARG;
     }
 
-    SEND(u, "UNLOG");
-    /* Wait for UM980 to stop streaming, then flush residual RX bytes */
-    usleep(200000);
-    tcflush(u->serial.fd, TCIFLUSH);
+    SerialResult r = send_unlog(u);
+    if (r != SERIAL_OK) return r;
 
     SEND(u, "MODE BASE");
     SEND(u, "CONFIG SIGNALGROUP 2");
@@ -169,10 +180,8 @@ SerialResult um980_init_rover(Um980 *u) {
         return SERIAL_ERR_ARG;
     }
 
-    SEND(u, "UNLOG");
-    /* Wait for UM980 to stop streaming, then flush residual RX bytes */
-    usleep(200000);
-    tcflush(u->serial.fd, TCIFLUSH);
+    SerialResult r = send_unlog(u);
+    if (r != SERIAL_OK) return r;
 
     SEND(u, "MODE ROVER");
     SEND(u, "CONFIG SIGNALGROUP 2");
