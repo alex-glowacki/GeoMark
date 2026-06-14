@@ -68,11 +68,8 @@ SerialResult serial_open(SerialPort *port, const char *device, int baud, int tim
 
     struct termios tty;
     memset(&tty, 0, sizeof(tty));
-
-    if (tcgetattr(fd, &tty) != 0) {
-        close(fd);
-        return SERIAL_ERR_ATTR;
-    }
+    /* Do not read current port state — start from a known zero state
+     * so prior port configuration never contaminates our settings. */
 
     /* Baud rate — identical for input and output */
     cfsetispeed(&tty, (speed_t)speed);
