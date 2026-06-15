@@ -17,10 +17,6 @@
  * Internal helpers
  * ---------------------------------------------------------------------- */
 
-/**
- * Map an integer baud rate to the Bxxx constant required by termios.
- * Returns -1 for unsupported rates.
- */
 static int baud_to_termios(int baud) {
     switch (baud) {
         case 9600:      return B9600;
@@ -53,13 +49,15 @@ SerialResult serial_open(SerialPort *port, const char *device, int baud, int tim
      * O_NOCTTY  — don't let the port become the controlling terminal
      * O_NONBLOCK — prevent open() blocking on modem control lines (DCD).
      *              The UM980 does not assert DCD; without this flag open()
-     *              hangs indefinitely on a hardware UART.
+     *              hangs indefinitely on a hardware UART until DCD is seen.
+     *              CLOCAL suppresses this too, but only after tcsetattr() —
+     *              too late. O_NONBLOCK must be set at open() time.
      * O_CLOEXEC — don't leak fd across exec (defensive)
      *
-     * O_NONBLOCK is cleared immediately after open() so that subsequent
-     * reads and writes use blocking I/O managed by select().
+     * O_NONBLOCK is cleared via fcntl() after tcsetattr() so that
+     * subsequent reads use blocking I/O gated by select().
      */
-    int fd = open(device, O_RDWR | O_NOCTTY | O_CLOEXEC);
+    int fd = open(device, O_RDWR | O_NOCTTY | O_NONBLOCK | O_CLOEXEC);
     if (fd == -1) {
         port->fd = -1;
         port->baud = 0;
@@ -68,36 +66,17 @@ SerialResult serial_open(SerialPort *port, const char *device, int baud, int tim
 
     struct termios tty;
     memset(&tty, 0, sizeof(tty));
-    /* Do not read current port state — start from a known zero state
-     * so prior port configuration never contaminates our settings. */
 
-    /* Baud rate — identical for input and output */
     cfsetispeed(&tty, (speed_t)speed);
     cfsetospeed(&tty, (speed_t)speed);
 
-    /*
-     * cfmakeraw() sets the canonical set of raw-mode flags in one call:
-     *   - no input processing (no CR→LF, no parity strip, no signal chars)
-     *   - no output processing
-     *   - no echo
-     *   - CS8: 8 data bits
-     * We then layer our own overrides on top.
-     */
     cfmakeraw(&tty);
 
-    /* 8N1: 8 data bits (already set by cfmakeraw), no parity, 1 stop bit */
-    tty.c_cflag &= (tcflag_t)~CSTOPB;   /* 1 stop bit */
-    tty.c_cflag &= (tcflag_t)~PARENB;   /* no parity */
-    tty.c_cflag |= CREAD | CLOCAL;      /* enable receiver, ignore modem lines */
-
-    /* No hardware flow control */
+    tty.c_cflag &= (tcflag_t)~CSTOPB;
+    tty.c_cflag &= (tcflag_t)~PARENB;
+    tty.c_cflag |= CREAD | CLOCAL;
     tty.c_cflag &= (tcflag_t)~CRTSCTS;
 
-    /*
-     * VMIN=0, VTIME=0: read() returns immediately with however many bytes
-     * are available (including 0). We manage our own timeout via select(),
-     * which gives millisecond granularity (VTIME is only 1/10 s units).
-     */
     tty.c_cc[VMIN] = 0;
     tty.c_cc[VTIME] = 0;
 
@@ -106,7 +85,16 @@ SerialResult serial_open(SerialPort *port, const char *device, int baud, int tim
         return SERIAL_ERR_ATTR;
     }
 
-    /* Flush any stale data left in the driver buffers */
+    /*
+     * Clear O_NONBLOCK now that termios is configured with CLOCAL.
+     * From this point on, read() blocks until select() says data is ready.
+     */
+    int flags = fcntl(fd, F_GETFL, 0);
+    if (flags == -1 || fcntl(fd, F_SETFL, flags & ~O_NONBLOCK) == -1) {
+        close(fd);
+        return SERIAL_ERR_ATTR;
+    }
+
     tcflush(fd, TCIOFLUSH);
 
     port->fd = fd;
@@ -165,7 +153,7 @@ SerialResult serial_write(SerialPort *port, const uint8_t *buf, size_t len) {
         ssize_t n = write(port->fd, buf + written, len - written);
         if (n == -1) {
             if (errno == EINTR) {
-                continue; /* interrupted by signal — retry */
+                continue;
             }
             return SERIAL_ERR_IO;
         }
