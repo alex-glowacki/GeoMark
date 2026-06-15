@@ -14,6 +14,10 @@
  *   - UNLOG is sent first without waiting for OK — we simply wait 2000ms
  *     for the stream to stop then flush, guaranteeing a clean channel
  *     for all subsequent commands regardless of prior output rate.
+ *   - MODE BASE TIME takes longer to acknowledge than other commands
+ *     because the UM980 processes survey-in parameters before responding.
+ *     um980_init_base() temporarily reopens with UM980_TIMEOUT_MS_LONG
+ *     for that command only.
  */
 
 #define _GNU_SOURCE
@@ -145,10 +149,14 @@ SerialResult um980_send_command(Um980 *u, const char *cmd) {
 /* -------------------------------------------------------------------------
  * um980_init_base
  *
- * MODE BASE TIME 60 1.5 2.5:
+ * MODE BASE TIME 60 2 2.5:
  *   - Survey-in for minimum 60 seconds
- *   - Stop when horizontal accuracy < 1.5 m
+ *   - Stop when horizontal accuracy < 2.0 m
  *   - Stop when vertical accuracy < 2.5 m
+ *
+ * This command takes longer to acknowledge than others — we reopen the
+ * serial port with UM980_TIMEOUT_MS_LONG before sending it, then restore
+ * the normal timeout afterward.
  *
  * RTCM1005 30 — station coordinates, every 30 seconds
  * RTCM1077 1  — GPS MSM7, every second
@@ -171,7 +179,13 @@ SerialResult um980_init_base(Um980 *u) {
     SerialResult r = send_unlog(u);
     if (r != SERIAL_OK) return r;
 
-    SEND(u, "MODE BASE");
+    /* Temporarily increase timeout for MODE BASE TIME — the UM980 takes
+     * longer to process survey-in parameters before acknowledging. */
+    u->serial.timeout_ms = UM980_TIMEOUT_MS_LONG;
+    r = um980_send_command(u, "MODE BASE TIME 60");
+    u->serial.timeout_ms = UM980_TIMEOUT_MS;
+    if (r != SERIAL_OK) return r;
+
     SEND(u, "CONFIG SIGNALGROUP 2");
     SEND(u, "RTCM1005 30");
     SEND(u, "RTCM1077 1");
