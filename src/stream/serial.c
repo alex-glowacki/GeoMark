@@ -49,15 +49,13 @@ SerialResult serial_open(SerialPort *port, const char *device, int baud, int tim
      * O_NOCTTY  — don't let the port become the controlling terminal
      * O_NONBLOCK — prevent open() blocking on modem control lines (DCD).
      *              The UM980 does not assert DCD; without this flag open()
-     *              hangs indefinitely on a hardware UART until DCD is seen.
-     *              CLOCAL suppresses this too, but only after tcsetattr() —
-     *              too late. O_NONBLOCK must be set at open() time.
+     *              hangs indefinitely on a hardware UART.
      * O_CLOEXEC — don't leak fd across exec (defensive)
      *
-     * O_NONBLOCK is cleared via fcntl() after tcsetattr() so that
-     * subsequent reads use blocking I/O gated by select().
+     * O_NONBLOCK is cleared immediately after open() so that subsequent
+     * reads and writes use blocking I/O managed by select().
      */
-    int fd = open(device, O_RDWR | O_NOCTTY | O_NONBLOCK | O_CLOEXEC);
+    int fd = open(device, O_RDWR | O_NOCTTY | O_CLOEXEC);
     if (fd == -1) {
         port->fd = -1;
         port->baud = 0;
@@ -81,16 +79,6 @@ SerialResult serial_open(SerialPort *port, const char *device, int baud, int tim
     tty.c_cc[VTIME] = 0;
 
     if (tcsetattr(fd, TCSANOW, &tty) != 0) {
-        close(fd);
-        return SERIAL_ERR_ATTR;
-    }
-
-    /*
-     * Clear O_NONBLOCK now that termios is configured with CLOCAL.
-     * From this point on, read() blocks until select() says data is ready.
-     */
-    int flags = fcntl(fd, F_GETFL, 0);
-    if (flags == -1 || fcntl(fd, F_SETFL, flags & ~O_NONBLOCK) == -1) {
         close(fd);
         return SERIAL_ERR_ATTR;
     }
