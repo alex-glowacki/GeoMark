@@ -14,10 +14,10 @@
  *   - UNLOG is sent first without waiting for OK — we simply wait 2000ms
  *     for the stream to stop then flush, guaranteeing a clean channel
  *     for all subsequent commands regardless of prior output rate.
- *   - MODE BASE TIME takes longer to acknowledge than other commands
- *     because the UM980 processes survey-in parameters before responding.
- *     um980_init_base() temporarily reopens with UM980_TIMEOUT_MS_LONG
- *     for that command only.
+ *   - MODE BASE TIME 60 starts survey-in. The UM980 never explicitly
+ *     signals survey-in completion via UART, so RTCM3 output is enabled
+ *     immediately after. The module refines the base position in the
+ *     background while corrections are already flowing.
  */
 
 #define _GNU_SOURCE
@@ -149,14 +149,13 @@ SerialResult um980_send_command(Um980 *u, const char *cmd) {
 /* -------------------------------------------------------------------------
  * um980_init_base
  *
- * MODE BASE TIME 60 2 2.5:
- *   - Survey-in for minimum 60 seconds
- *   - Stop when horizontal accuracy < 2.0 m
- *   - Stop when vertical accuracy < 2.5 m
+ * MODE BASE TIME 60 — survey-in with 60 second minimum averaging window.
+ * The UM980 never explicitly signals survey-in completion via UART, so
+ * RTCM3 output is enabled immediately after the mode command. The module
+ * refines the base position in the background while corrections flow.
  *
- * This command takes longer to acknowledge than others — we reopen the
- * serial port with UM980_TIMEOUT_MS_LONG before sending it, then restore
- * the normal timeout afterward.
+ * Uses UM980_TIMEOUT_MS_LONG for MODE BASE TIME since this command takes
+ * longer to acknowledge than others.
  *
  * RTCM1005 30 — station coordinates, every 30 seconds
  * RTCM1077 1  — GPS MSM7, every second
@@ -179,8 +178,7 @@ SerialResult um980_init_base(Um980 *u) {
     SerialResult r = send_unlog(u);
     if (r != SERIAL_OK) return r;
 
-    /* Temporarily increase timeout for MODE BASE TIME — the UM980 takes
-     * longer to process survey-in parameters before acknowledging. */
+    /* Use extended timeout for MODE BASE TIME — takes longer to acknowledge. */
     u->serial.timeout_ms = UM980_TIMEOUT_MS_LONG;
     r = um980_send_command(u, "MODE BASE TIME 60");
     u->serial.timeout_ms = UM980_TIMEOUT_MS;
