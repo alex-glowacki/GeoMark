@@ -11,7 +11,7 @@
  *     to be robust to response format variations.
  *   - We do not call SAVECONFIG. GeoMark re-initializes the UM980 on
  *     every startup so the active config always matches the binary.
- *   - UNLOG is sent first without waiting for OK — we simply wait 300ms
+ *   - UNLOG is sent first without waiting for OK — we simply wait 2000ms
  *     for the stream to stop then flush, guaranteeing a clean channel
  *     for all subsequent commands regardless of prior output rate.
  */
@@ -61,7 +61,7 @@ static int read_line(SerialPort *port, char *out, size_t out_size) {
 /**
  * @brief Send UNLOG to silence all UM980 output.
  *
- * Does not wait for the OK response — instead waits 300 ms for the
+ * Does not wait for the OK response — instead waits 2000 ms for the
  * stream to stop then flushes the RX buffer. This guarantees a clean
  * channel regardless of how fast the UM980 was streaming.
  */
@@ -144,6 +144,17 @@ SerialResult um980_send_command(Um980 *u, const char *cmd) {
 
 /* -------------------------------------------------------------------------
  * um980_init_base
+ *
+ * MODE BASE TIME 60 1.5 2.5:
+ *   - Survey-in for minimum 60 seconds
+ *   - Stop when horizontal accuracy < 1.5 m
+ *   - Stop when vertical accuracy < 2.5 m
+ *
+ * RTCM1005 30 — station coordinates, every 30 seconds
+ * RTCM1077 1  — GPS MSM7, every second
+ * RTCM1087 1  — GLONASS MSM7, every second
+ * RTCM1097 1  — Galileo MSM7, every second
+ * RTCM1127 1  — BeiDou MSM7, every second
  * ---------------------------------------------------------------------- */
 
 #define SEND(u, cmd)                                        \
@@ -160,7 +171,7 @@ SerialResult um980_init_base(Um980 *u) {
     SerialResult r = send_unlog(u);
     if (r != SERIAL_OK) return r;
 
-    SEND(u, "MODE BASE");
+    SEND(u, "MODE BASE TIME 60 1.5 2.5");
     SEND(u, "CONFIG SIGNALGROUP 2");
     SEND(u, "RTCM1005 30");
     SEND(u, "RTCM1077 1");
