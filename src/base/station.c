@@ -10,6 +10,10 @@
  * The Um980 fd is closed after init so the collector owns the port
  * exclusively — two fds open on the same device splits the byte stream
  * and prevents RTCM3 frame detection.
+ *
+ * A 500 ms settle delay is inserted after um980_close() so the kernel
+ * UART driver quiesces before the collector opens its own fd. Without
+ * this, select() on the new fd never fires even though data is present.
  */
 
 #define _GNU_SOURCE
@@ -23,6 +27,7 @@
 
 #include <signal.h>
 #include <string.h>
+#include <unistd.h>
 
 /* --------------------------------------------------------------------------
  * Module-level state shared with signal handler and callback
@@ -102,9 +107,13 @@ gm_status_t base_station_run(const char *config_path)
     log_info("base: UM980 configured for base mode");
 
     /* Close the init fd before starting the collector — two fds open on
-     * the same device splits the byte stream and prevents frame detection. */
+     * the same device splits the byte stream and prevents frame detection.
+     * Wait 500 ms after closing so the kernel UART driver quiesces and
+     * the collector's select() fires correctly on the new fd. */
     um980_close(&um980);
-    log_info("base: UM980 init fd closed — collector takes over");
+    log_info("base: UM980 init fd closed — settling 500ms");
+    usleep(500000);
+    log_info("base: collector takes over");
 
     /* --- Radio ---------------------------------------------------------- */
     Radio radio;
