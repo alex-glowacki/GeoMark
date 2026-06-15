@@ -171,7 +171,7 @@ SerialResult um980_init_base(Um980 *u) {
     SerialResult r = send_unlog(u);
     if (r != SERIAL_OK) return r;
 
-    SEND(u, "MODE BASE TIME 60 2 2.5");
+    SEND(u, "MODE BASE");
     SEND(u, "CONFIG SIGNALGROUP 2");
     SEND(u, "RTCM1005 30");
     SEND(u, "RTCM1077 1");
