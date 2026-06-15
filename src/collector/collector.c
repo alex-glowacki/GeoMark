@@ -110,9 +110,6 @@ static int try_nmea(Collector *c) {
     memcpy(frame.data, buf, sentence_len);
     frame.len = sentence_len;
 
-    /* Decode into the appropriate union member.
-     * Unrecognised sentence types are forwarded raw; decoded union stays
-     * zeroed (NmeaGga/NmeaRmc both have a 'valid' flag — caller checks it). */
     if (nmea_parse_gga((const char *)buf, &frame.decoded.gga)) {
         /* decoded.gga is valid */
     } else if (nmea_parse_rmc((const char *)buf, &frame.decoded.rmc)) {
@@ -126,10 +123,6 @@ static int try_nmea(Collector *c) {
 /* =========================================================================
  * RTCM3 frame parser
  *
- * Linearises the ring into a scratch buffer, then delegates to
- * rtcm3_find_frame() for preamble detection, length extraction, and
- * CRC-24Q validation.
- *
  * Returns:
  *   > 0   bytes consumed (complete frame dispatched via callback)
  *     0   not enough data yet
@@ -139,11 +132,9 @@ static int try_rtcm3(Collector *c)
 {
     size_t avail = ring_used(c);
 
-    /* Minimum RTCM3 frame: 3-byte header + 0-byte payload + 3-byte CRC */
     if (avail < RTCM3_MIN_FRAME_LEN)
         return 0;
 
-    /* Linearise the ring into a contiguous scratch buffer. */
     uint8_t buf[COLLECTOR_RING_SIZE];
     ring_copy_to(c, buf, avail);
 
@@ -153,30 +144,21 @@ static int try_rtcm3(Collector *c)
     int found = rtcm3_find_frame(buf, avail, &frame_start, &payload_len);
 
     if (!found) {
-        /* No valid frame found in current buffer contents.
-         * If the buffer starts with 0xD3 but is just incomplete, wait.
-         * If it doesn't start with 0xD3 at all, discard the lead byte. */
         if (buf[0] != RTCM3_PREAMBLE)
             return -1;
         return 0;
     }
 
-    /* A valid frame was found.  It may not start at index 0 — there could
-     * be garbage bytes before the preamble.  Discard the garbage first so
-     * next time around the ring tail points directly at 0xD3. */
     if (frame_start > 0) {
         ring_discard(c, frame_start);
-        return 0; /* re-enter parse_ring on next iteration */
+        return 0;
     }
 
-    /* Frame starts at index 0.  Total frame size:
-     *   3-byte header + payload_len bytes + 3-byte CRC */
     size_t frame_len = 3 + payload_len + 3;
 
     if (frame_len > COLLECTOR_FRAME_MAX)
         return -1;
 
-    /* Ensure the full frame is actually present in our linearised buffer. */
     if (frame_len > avail)
         return 0;
 
@@ -186,7 +168,6 @@ static int try_rtcm3(Collector *c)
     memcpy(frame.data, buf, frame_len);
     frame.len = frame_len;
 
-    /* Payload starts immediately after the 3-byte header. */
     const uint8_t *payload = buf + 3;
     frame.decoded.rtcm3_msg_type = rtcm3_decode(payload, payload_len);
 
@@ -196,9 +177,6 @@ static int try_rtcm3(Collector *c)
 
 /* =========================================================================
  * Main parse loop
- *
- * Drains as many complete frames from the ring as possible before
- * returning to wait for more serial data.
  * ========================================================================= */
 void parse_ring(Collector *c)
 {
@@ -211,7 +189,6 @@ void parse_ring(Collector *c)
         } else if (lead == RTCM3_PREAMBLE) {
             consumed = try_rtcm3(c);
         } else {
-            /* Unrecognised lead byte — not a valid frame start, discard. */
             ring_discard(c, 1);
             continue;
         }
@@ -219,10 +196,8 @@ void parse_ring(Collector *c)
         if (consumed > 0) {
             ring_discard(c, (size_t)consumed);
         } else if (consumed < 0) {
-            /* Bad framing — discard the lead byte and retry. */
             ring_discard(c, 1);
         } else {
-            /* consumed == 0: need more data from the serial port. */
             break;
         }
     }
@@ -243,18 +218,13 @@ static void *collector_thread(void *arg)
             log_debug("collector: received %d bytes, lead=0x%02x", n, tmp[0]); /* TEMP */
             for (int i = 0; i < n; i++) {
                 if (!ring_push(c, tmp[i])) {
-                    /* Ring full — parser is falling behind.  Drop the rest
-                     * of this burst; re-sync will happen on the next valid
-                     * preamble byte. */
                     break;
                 }
             }
             parse_ring(c);
         } else if (n == -(int)SERIAL_ERR_TIMEOUT) {
-            /* No data within the timeout window — normal idle, keep looping. */
             continue;
         } else if (n < 0) {
-            /* Real I/O error on the port — stop the thread. */
             break;
         }
     }
@@ -263,32 +233,58 @@ static void *collector_thread(void *arg)
 }
 
 /* =========================================================================
- * Public API
+ * Internal thread start helper
  * ========================================================================= */
-
-SerialResult collector_start(Collector        *c,
-                             const char       *device,
-                             int               baud,
-                             CollectorCallback callback,
-                             void             *user)
+static SerialResult start_thread(Collector *c, CollectorCallback callback, void *user)
 {
-    memset(c, 0, sizeof(*c));
     c->callback = callback;
     c->user     = user;
-    /* head and tail initialise to 0 via memset — ring starts empty. */
+    c->head     = 0;
+    c->tail     = 0;
+    c->running  = 1;
 
-    SerialResult r = serial_open(&c->serial, device, baud, 100 /* ms timeout */);
-    if (r != SERIAL_OK)
-        return r;
-
-    c->running = 1;
     if (pthread_create(&c->thread, NULL, collector_thread, c) != 0) {
-        serial_close(&c->serial);
         c->running = 0;
         return SERIAL_ERR_IO;
     }
 
     return SERIAL_OK;
+}
+
+/* =========================================================================
+ * Public API
+ * ========================================================================= */
+
+SerialResult collector_start(Collector *c, const char *device, int baud,
+                             CollectorCallback callback, void *user)
+{
+    memset(c, 0, sizeof(*c));
+    c->owns_port = 1;
+
+    SerialResult r = serial_open(&c->serial, device, baud, 100 /* ms timeout */);
+    if (r != SERIAL_OK)
+        return r;
+
+    r = start_thread(c, callback, user);
+    if (r != SERIAL_OK) {
+        serial_close(&c->serial);
+        return r;
+    }
+
+    return SERIAL_OK;
+}
+
+SerialResult collector_start_from_port(Collector *c, SerialPort *port,
+                                       CollectorCallback callback, void *user)
+{
+    if (!c || !port || port->fd == -1 || !callback)
+        return SERIAL_ERR_ARG;
+
+    memset(c, 0, sizeof(*c));
+    c->serial    = *port;   /* copy the SerialPort struct (fd, baud, timeout) */
+    c->owns_port = 0;       /* caller owns the fd — we must not close it */
+
+    return start_thread(c, callback, user);
 }
 
 void collector_stop(Collector *c)
@@ -297,5 +293,6 @@ void collector_stop(Collector *c)
         return;
     c->running = 0;
     pthread_join(c->thread, NULL);
-    serial_close(&c->serial);
+    if (c->owns_port)
+        serial_close(&c->serial);
 }

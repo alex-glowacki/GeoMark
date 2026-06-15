@@ -7,13 +7,10 @@
  * from the UM980 is forwarded out over the radio to the rover.
  * Blocks until SIGINT or SIGTERM, then cleans up in reverse order.
  *
- * The Um980 fd is closed after init so the collector owns the port
- * exclusively — two fds open on the same device splits the byte stream
- * and prevents RTCM3 frame detection.
- *
- * A 500 ms settle delay is inserted after um980_close() so the kernel
- * UART driver quiesces before the collector opens its own fd. Without
- * this, select() on the new fd never fires even though data is present.
+ * The collector takes ownership of the Um980's SerialPort fd via
+ * collector_start_from_port() — no close/reopen cycle. Closing and
+ * reopening ttyAMA0 causes select() to stop firing on the new fd,
+ * preventing the collector from ever receiving data.
  */
 
 #define _GNU_SOURCE
@@ -27,7 +24,6 @@
 
 #include <signal.h>
 #include <string.h>
-#include <unistd.h>
 
 /* --------------------------------------------------------------------------
  * Module-level state shared with signal handler and callback
@@ -106,15 +102,6 @@ gm_status_t base_station_run(const char *config_path)
     }
     log_info("base: UM980 configured for base mode");
 
-    /* Close the init fd before starting the collector — two fds open on
-     * the same device splits the byte stream and prevents frame detection.
-     * Wait 500 ms after closing so the kernel UART driver quiesces and
-     * the collector's select() fires correctly on the new fd. */
-    um980_close(&um980);
-    log_info("base: UM980 init fd closed — settling 500ms");
-    usleep(500000);
-    log_info("base: collector takes over");
-
     /* --- Radio ---------------------------------------------------------- */
     Radio radio;
     memset(&radio, 0, sizeof(radio));
@@ -122,20 +109,26 @@ gm_status_t base_station_run(const char *config_path)
     sr = radio_open(&radio, cfg.radio_device, cfg.radio_baud);
     if (sr != SERIAL_OK) {
         log_error("base: radio_open(%s) failed (%d)", cfg.radio_device, sr);
+        um980_close(&um980);
         return GM_ERR_IO;
     }
     log_info("base: radio opened on %s", cfg.radio_device);
 
     /* --- Collector ------------------------------------------------------- */
+    /* Pass the Um980's existing fd directly to the collector — no
+     * close/reopen cycle. On ttyAMA0, closing and reopening the fd causes
+     * select() to stop firing on the new fd. The collector does not own
+     * the port (owns_port=0); um980_close() handles cleanup below. */
     BaseCallbackCtx ctx = { .radio = &radio };
     Collector collector;
     memset(&collector, 0, sizeof(collector));
 
-    sr = collector_start(&collector, cfg.serial_device, cfg.serial_baud,
-                         base_callback, &ctx);
+    sr = collector_start_from_port(&collector, &um980.serial,
+                                   base_callback, &ctx);
     if (sr != SERIAL_OK) {
-        log_error("base: collector_start failed (%d)", sr);
+        log_error("base: collector_start_from_port failed (%d)", sr);
         radio_close(&radio);
+        um980_close(&um980);
         return GM_ERR_IO;
     }
     log_info("base: collector running — relaying RTCM3 to radio");
@@ -155,8 +148,9 @@ gm_status_t base_station_run(const char *config_path)
     log_info("base: shutting down");
 
     /* --- Cleanup (reverse init order) ----------------------------------- */
-    collector_stop(&collector);
+    collector_stop(&collector);  /* does not close the fd (owns_port=0) */
     radio_close(&radio);
+    um980_close(&um980);         /* closes the fd the collector was using */
 
     log_info("base: shutdown complete");
     return GM_OK;
