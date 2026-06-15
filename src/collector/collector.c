@@ -215,7 +215,6 @@ static void *collector_thread(void *arg)
         int n = serial_read(&c->serial, tmp, sizeof(tmp));
 
         if (n > 0) {
-            log_debug("collector: received %d bytes, lead=0x%02x", n, tmp[0]); /* TEMP */
             for (int i = 0; i < n; i++) {
                 if (!ring_push(c, tmp[i])) {
                     break;
