@@ -6,6 +6,10 @@
  * collector on the UM980 serial port.  Every RTCM3 frame received
  * from the UM980 is forwarded out over the radio to the rover.
  * Blocks until SIGINT or SIGTERM, then cleans up in reverse order.
+ *
+ * The Um980 fd is closed after init so the collector owns the port
+ * exclusively — two fds open on the same device splits the byte stream
+ * and prevents RTCM3 frame detection.
  */
 
 #define _GNU_SOURCE
@@ -97,6 +101,11 @@ gm_status_t base_station_run(const char *config_path)
     }
     log_info("base: UM980 configured for base mode");
 
+    /* Close the init fd before starting the collector — two fds open on
+     * the same device splits the byte stream and prevents frame detection. */
+    um980_close(&um980);
+    log_info("base: UM980 init fd closed — collector takes over");
+
     /* --- Radio ---------------------------------------------------------- */
     Radio radio;
     memset(&radio, 0, sizeof(radio));
@@ -104,7 +113,6 @@ gm_status_t base_station_run(const char *config_path)
     sr = radio_open(&radio, cfg.radio_device, cfg.radio_baud);
     if (sr != SERIAL_OK) {
         log_error("base: radio_open(%s) failed (%d)", cfg.radio_device, sr);
-        um980_close(&um980);
         return GM_ERR_IO;
     }
     log_info("base: radio opened on %s", cfg.radio_device);
@@ -119,7 +127,6 @@ gm_status_t base_station_run(const char *config_path)
     if (sr != SERIAL_OK) {
         log_error("base: collector_start failed (%d)", sr);
         radio_close(&radio);
-        um980_close(&um980);
         return GM_ERR_IO;
     }
     log_info("base: collector running — relaying RTCM3 to radio");
@@ -141,7 +148,6 @@ gm_status_t base_station_run(const char *config_path)
     /* --- Cleanup (reverse init order) ----------------------------------- */
     collector_stop(&collector);
     radio_close(&radio);
-    um980_close(&um980);
 
     log_info("base: shutdown complete");
     return GM_OK;

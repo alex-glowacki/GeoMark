@@ -11,6 +11,13 @@
  *   2. Radio collector (SiK → RTCM3):  forwards raw correction frames
  *      back to the UM980 via serial_write() to close the RTK loop.
  *
+ * Both Um980 and Radio init fds are closed before collectors start so
+ * each collector owns its port exclusively — two fds open on the same
+ * device splits the byte stream and prevents frame detection.
+ *
+ * radio_callback writes RTCM3 corrections via gnss_collector's serial fd
+ * since that is the only open fd to /dev/ttyAMA0 after um980_close().
+ *
  * After collectors start, starts the TCP stream server and runs a 2 Hz
  * broadcast loop until SIGINT or SIGTERM, then cleans up in reverse order.
  */
@@ -112,11 +119,14 @@ static void gnss_callback(const CollectorFrame *frame, void *user)
 }
 
 /* --------------------------------------------------------------------------
- * Radio collector callback — forwards RTCM3 corrections to UM980
+ * Radio collector callback — forwards RTCM3 corrections to UM980.
+ *
+ * Writes via gnss_collector's serial fd — the only open fd to
+ * /dev/ttyAMA0 after um980_close().
  * ----------------------------------------------------------------------- */
 
 typedef struct {
-    Um980 *um980;
+    Collector *gnss_collector;
 } RadioCallbackCtx;
 
 static void radio_callback(const CollectorFrame *frame, void *user)
@@ -126,7 +136,8 @@ static void radio_callback(const CollectorFrame *frame, void *user)
 
     RadioCallbackCtx *ctx = (RadioCallbackCtx *)user;
 
-    SerialResult r = serial_write(&ctx->um980->serial, frame->data, frame->len);
+    SerialResult r = serial_write(&ctx->gnss_collector->serial,
+                                  frame->data, frame->len);
     if (r != SERIAL_OK) {
         log_error("rover: serial_write RTCM3 to UM980 failed (%d), msg %d dropped",
                   r, frame->decoded.rtcm3_msg_type);
@@ -182,6 +193,10 @@ gm_status_t rover_station_run(const char *config_path)
     }
     log_info("rover: UM980 configured for rover mode");
 
+    /* Close init fd — gnss_collector takes exclusive ownership of the port. */
+    um980_close(&um980);
+    log_info("rover: UM980 init fd closed — gnss_collector takes over");
+
     /* --- Radio ---------------------------------------------------------- */
     Radio radio;
     memset(&radio, 0, sizeof(radio));
@@ -189,11 +204,14 @@ gm_status_t rover_station_run(const char *config_path)
     sr = radio_open(&radio, cfg.radio_device, cfg.radio_baud);
     if (sr != SERIAL_OK) {
         log_error("rover: radio_open(%s) failed (%d)", cfg.radio_device, sr);
-        um980_close(&um980);
         pthread_mutex_destroy(&fix_state.mutex);
         return GM_ERR_IO;
     }
     log_info("rover: radio opened on %s", cfg.radio_device);
+
+    /* Close init fd — radio_collector takes exclusive ownership of the port. */
+    radio_close(&radio);
+    log_info("rover: radio init fd closed — radio_collector takes over");
 
     /* --- GNSS collector ------------------------------------------------- */
     Collector gnss_collector;
@@ -203,15 +221,15 @@ gm_status_t rover_station_run(const char *config_path)
                          gnss_callback, &fix_state);
     if (sr != SERIAL_OK) {
         log_error("rover: gnss collector_start failed (%d)", sr);
-        radio_close(&radio);
-        um980_close(&um980);
         pthread_mutex_destroy(&fix_state.mutex);
         return GM_ERR_IO;
     }
     log_info("rover: GNSS collector running");
 
     /* --- Radio collector ------------------------------------------------ */
-    RadioCallbackCtx radio_ctx = { .um980 = &um980 };
+    /* radio_callback writes corrections via gnss_collector's serial fd —
+     * the only open fd to /dev/ttyAMA0 after um980_close(). */
+    RadioCallbackCtx radio_ctx = { .gnss_collector = &gnss_collector };
     Collector radio_collector;
     memset(&radio_collector, 0, sizeof(radio_collector));
 
@@ -220,8 +238,6 @@ gm_status_t rover_station_run(const char *config_path)
     if (sr != SERIAL_OK) {
         log_error("rover: radio collector_start failed (%d)", sr);
         collector_stop(&gnss_collector);
-        radio_close(&radio);
-        um980_close(&um980);
         pthread_mutex_destroy(&fix_state.mutex);
         return GM_ERR_IO;
     }
@@ -230,7 +246,6 @@ gm_status_t rover_station_run(const char *config_path)
     /* --- Stream server -------------------------------------------------- */
     gm_status_t ss = stream_server_start();
     if (ss != GM_OK) {
-        /* Non-fatal: log and continue — handheld just won't receive data */
         log_warn("rover: stream_server_start failed — running without WiFi stream");
     } else {
         log_info("rover: stream server listening on port %d", ROVER_PACKET_PORT);
@@ -248,7 +263,6 @@ gm_status_t rover_station_run(const char *config_path)
 
     /* --- Broadcast loop at 2 Hz ---------------------------------------- */
     while (g_running) {
-        /* Take a snapshot of the fix state under the mutex */
         gm_position_t snap;
         int valid;
         pthread_mutex_lock(&fix_state.mutex);
@@ -256,7 +270,6 @@ gm_status_t rover_station_run(const char *config_path)
         valid = fix_state.valid;
         pthread_mutex_unlock(&fix_state.mutex);
 
-        /* Build and broadcast the status packet */
         if (ss == GM_OK) {
             RoverStatusPacket pkt;
             memset(&pkt, 0, sizeof(pkt));
@@ -284,8 +297,6 @@ gm_status_t rover_station_run(const char *config_path)
         stream_server_stop();
     collector_stop(&radio_collector);
     collector_stop(&gnss_collector);
-    radio_close(&radio);
-    um980_close(&um980);
     pthread_mutex_destroy(&fix_state.mutex);
 
     log_info("rover: shutdown complete");
