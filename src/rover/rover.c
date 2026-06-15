@@ -9,7 +9,12 @@
  *
  * Two independent collector threads run simultaneously.  The latest fix is
  * stored in a shared struct protected by a mutex, ready for the UI layer
- * (Phase 4) to read.
+ * to read via rover_get_fix().
+ *
+ * The Um980 and Radio structs are used only for init command exchange.
+ * After init, both fds are closed so the collectors own their respective
+ * ports exclusively — two fds open on the same device splits the byte
+ * stream and prevents frame detection.
  *
  * rover_station_run() blocks until SIGINT or SIGTERM.
  */
@@ -49,12 +54,12 @@ static void install_signal_handlers(void) {
 }
 
 /* --------------------------------------------------------------------------
- * Shared fix state (written by gnss_collector thread, read by UI — Phase 4)
+ * Shared fix state (written by gnss_collector thread, read by UI)
  * ---------------------------------------------------------------------- */
 
 typedef struct {
     gm_position_t position;
-    int valid;  /* 1 if at least one fix has been received */
+    int           valid;
     pthread_mutex_t mutex;
 } RoverFixState;
 
@@ -78,14 +83,11 @@ typedef struct {
 static void gnss_callback(const CollectorFrame *frame, void *user) {
     GnssCallbackCtx *ctx = (GnssCallbackCtx *)user;
 
-    if (frame->type != COLLECTOR_FRAME_NMEA) {
+    if (frame->type != COLLECTOR_FRAME_NMEA)
         return;
-    }
 
-    /* Only GGA carries fix quality and position — RMC has no fix-type field */
-    if (!frame->decoded.gga.valid) {
+    if (!frame->decoded.gga.valid)
         return;
-    }
 
     const NmeaGga *gga = &frame->decoded.gga;
 
@@ -97,7 +99,6 @@ static void gnss_callback(const CollectorFrame *frame, void *user) {
     pos.hdop       = (float)gga->hdop;
     pos.satellites = gga->num_sats;
 
-    /* Map NMEA fix quality indicator to gm_fix_type_t */
     switch (gga->fix_quality) {
         case 1:  pos.fix_type = FIX_SINGLE;    break;
         case 2:  pos.fix_type = FIX_DGPS;      break;
@@ -108,7 +109,7 @@ static void gnss_callback(const CollectorFrame *frame, void *user) {
 
     pthread_mutex_lock(&ctx->fix_state->mutex);
     ctx->fix_state->position = pos;
-    ctx->fix_state->valid     = 1;
+    ctx->fix_state->valid    = 1;
     pthread_mutex_unlock(&ctx->fix_state->mutex);
 
     log_debug("rover: fix type=%d lat=%.8f lon=%.8f alt=%.3f sats=%d hdop=%.1f",
@@ -117,21 +118,25 @@ static void gnss_callback(const CollectorFrame *frame, void *user) {
 }
 
 /* --------------------------------------------------------------------------
- * Radio collector callback — fires when SiK radio delivers an RTCM3 frame
+ * Radio collector callback — fires when SiK radio delivers an RTCM3 frame.
+ *
+ * Writes the correction frame directly to the gnss_collector's serial fd
+ * so the UM980 receives it.  The gnss_collector owns the only open fd to
+ * /dev/ttyAMA0 after um980_close() — we write through its SerialPort.
  * ---------------------------------------------------------------------- */
 
 typedef struct {
-    Um980 *um980;
+    Collector *gnss_collector; /* write RTCM3 corrections via this fd */
 } RadioCallbackCtx;
 
 static void radio_callback(const CollectorFrame *frame, void *user) {
     RadioCallbackCtx *ctx = (RadioCallbackCtx *)user;
 
-    if (frame->type != COLLECTOR_FRAME_RTCM3) {
-        return; /* ignore anything that isn't a correction frame */
-    }
+    if (frame->type != COLLECTOR_FRAME_RTCM3)
+        return;
 
-    SerialResult r = serial_write(&ctx->um980->serial, frame->data, frame->len);
+    SerialResult r = serial_write(&ctx->gnss_collector->serial,
+                                  frame->data, frame->len);
     if (r != SERIAL_OK) {
         log_error("rover: serial_write to UM980 failed (%d) — RTCM3 msg %d dropped",
                   r, frame->decoded.rtcm3_msg_type);
@@ -160,7 +165,7 @@ gm_status_t rover_station_run(const char *config_path) {
     log_info("rover: config loaded — gnss=%s radio=%s",
              cfg.serial_device, cfg.radio_device);
 
-    /* --- Hardware init -------------------------------------------------- */
+    /* --- UM980 init ----------------------------------------------------- */
     Um980 um980;
     memset(&um980, 0, sizeof(um980));
 
@@ -179,19 +184,27 @@ gm_status_t rover_station_run(const char *config_path) {
     }
     log_info("rover: UM980 configured for rover mode");
 
+    /* Close init fd — gnss_collector takes exclusive ownership of the port. */
+    um980_close(&um980);
+    log_info("rover: UM980 init fd closed — gnss_collector takes over");
+
+    /* --- Radio init ----------------------------------------------------- */
     Radio radio;
     memset(&radio, 0, sizeof(radio));
 
     sr = radio_open(&radio, cfg.radio_device, cfg.radio_baud);
     if (sr != SERIAL_OK) {
         log_error("rover: radio_open(%s) failed (%d)", cfg.radio_device, sr);
-        um980_close(&um980);
         return GM_ERR_IO;
     }
     log_info("rover: radio opened on %s at %d baud",
              cfg.radio_device, cfg.radio_baud);
-    
-    /* --- Shared state --------------------------------------------------- */
+
+    /* Close init fd — radio_collector takes exclusive ownership of the port. */
+    radio_close(&radio);
+    log_info("rover: radio init fd closed — radio_collector takes over");
+
+    /* --- Shared fix state ----------------------------------------------- */
     RoverFixState fix_state;
     fix_state_init(&fix_state);
 
@@ -208,22 +221,19 @@ gm_status_t rover_station_run(const char *config_path) {
     if (sr != SERIAL_OK) {
         log_error("rover: gnss collector_start failed (%d)", sr);
         fix_state_destroy(&fix_state);
-        radio_close(&radio);
-        um980_close(&um980);
         return GM_ERR_IO;
     }
     log_info("rover: GNSS collector running");
 
-    /* --- Radio collector (SiK → RTCM3 corrections → UM980) ------------- */
+    /* --- Radio collector (SiK → RTCM3 → UM980) ------------------------- */
+    /* radio_callback writes corrections to gnss_collector's serial fd,
+     * which is the only open fd to /dev/ttyAMA0 at this point. */
     RadioCallbackCtx radio_ctx;
-    radio_ctx.um980 = &um980;
+    radio_ctx.gnss_collector = &gnss_collector;
 
     Collector radio_collector;
     memset(&radio_collector, 0, sizeof(radio_collector));
 
-    /* The radio collector reads from the SiK radio device.  We reuse the
-     * Collector machinery since the SiK radio is also a transparent UART.
-     * collector_start() opens its own fd — it does not share the Radio fd. */
     sr = collector_start(&radio_collector,
                          cfg.radio_device, cfg.radio_baud,
                          radio_callback, &radio_ctx);
@@ -231,8 +241,6 @@ gm_status_t rover_station_run(const char *config_path) {
         log_error("rover: radio collector_start failed (%d)", sr);
         collector_stop(&gnss_collector);
         fix_state_destroy(&fix_state);
-        radio_close(&radio);
-        um980_close(&um980);
         return GM_ERR_IO;
     }
     log_info("rover: radio collector running — RTK correction loop active");
@@ -254,12 +262,6 @@ gm_status_t rover_station_run(const char *config_path) {
     log_info("rover: GNSS collector stopped");
 
     fix_state_destroy(&fix_state);
-
-    radio_close(&radio);
-    log_info("rover: radio closed");
-
-    um980_close(&um980);
-    log_info("rover: UM980 closed");
 
     return GM_OK;
 }

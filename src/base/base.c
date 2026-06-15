@@ -7,7 +7,7 @@
  *   UM980 UART → collector (RTCM3 frame detection) → radio_write()
  *
  * The collector thread handles all I/O. base_station_run() blocks in a
- * signal-wait loop and returns only after SIGINT or SIGTERM>
+ * signal-wait loop and returns only after SIGINT or SIGTERM.
  */
 
 #define _GNU_SOURCE
@@ -62,7 +62,7 @@ static void base_callback(const CollectorFrame *frame, void *user) {
         log_error("base: radio_write failed (%d) — RTCM3 msg %d dropped",
                   r, frame->decoded.rtcm3_msg_type);
     } else {
-        log_debug("base: relayed RTCM3 msg %d (%zu bytes)",
+        log_debug("base: forwarded RTCM3 msg %d (%zu bytes)",
                   frame->decoded.rtcm3_msg_type, frame->len);
     }
 }
@@ -105,18 +105,23 @@ gm_status_t base_station_run(const char *config_path) {
     }
     log_info("base: UM980 configured for base mode");
 
+    /* Close the init fd — the collector opens its own fd for the data stream.
+     * Both holding the port simultaneously splits the byte stream and prevents
+     * the collector from seeing complete RTCM3 frames. */
+    um980_close(&um980);
+    log_info("base: UM980 init fd closed — collector takes over");
+
     Radio radio;
     memset(&radio, 0, sizeof(radio));
 
     sr = radio_open(&radio, cfg.radio_device, cfg.radio_baud);
     if (sr != SERIAL_OK) {
         log_error("base: radio_open(%s) failed (%d)", cfg.radio_device, sr);
-        um980_close(&um980);
         return GM_ERR_IO;
     }
     log_info("base: radio opened on %s at %d baud",
              cfg.radio_device, cfg.radio_baud);
-    
+
     /* --- Collector ------------------------------------------------------- */
     BaseCallbackCtx ctx;
     ctx.radio = &radio;
@@ -124,17 +129,12 @@ gm_status_t base_station_run(const char *config_path) {
     Collector collector;
     memset(&collector, 0, sizeof(collector));
 
-    /* The collector opens its own serial port to the UM980 — the Um980 struct
-     * and the Collector each hold independent file descriptors. The Um980
-     * fd is used only for the init command exchange; the Collector fd carries
-     * the continuous data stream. */
     sr = collector_start(&collector,
                          cfg.serial_device, cfg.serial_baud,
                          base_callback, &ctx);
     if (sr != SERIAL_OK) {
         log_error("base: collector_start failed (%d)", sr);
         radio_close(&radio);
-        um980_close(&um980);
         return GM_ERR_IO;
     }
     log_info("base: collector running — relaying RTCM3 to radio");
@@ -142,8 +142,6 @@ gm_status_t base_station_run(const char *config_path) {
     /* --- Main loop ------------------------------------------------------ */
     install_signal_handlers();
 
-    /* pause() sleeps until any signal is delivered. Our handler sets
-     * g_stop; the loop then exits and we fall through to cleanup. */
     while (!g_stop) {
         pause();
     }
@@ -156,9 +154,6 @@ gm_status_t base_station_run(const char *config_path) {
 
     radio_close(&radio);
     log_info("base: radio closed");
-
-    um980_close(&um980);
-    log_info("base: UM980 closed");
 
     return GM_OK;
 }
