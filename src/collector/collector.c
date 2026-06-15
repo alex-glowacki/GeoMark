@@ -1,9 +1,10 @@
-#include "gnss/nmea.h"
-#include <stddef.h>
 #define _GNU_SOURCE
 
 #include "collector.h"
+#include "gnss/nmea.h"
+#include "util/log.h"
 
+#include <stddef.h>
 #include <string.h>
 
 /* =========================================================================
@@ -37,7 +38,7 @@ static int ring_push(Collector *c, uint8_t byte) {
     return 1;
 }
 
-/* Read byte at 'offset' positions ahead of tail, without consuming. 
+/* Read byte at 'offset' positions ahead of tail, without consuming.
  * Caller must guarantee: offset < ring_used(c). */
 static inline uint8_t ring_peek(const Collector *c, size_t offset) {
     return c->ring[(c->tail + offset) & RING_MASK];
@@ -128,11 +129,6 @@ static int try_nmea(Collector *c) {
  * Linearises the ring into a scratch buffer, then delegates to
  * rtcm3_find_frame() for preamble detection, length extraction, and
  * CRC-24Q validation.
- *
- * rtcm3_find_frame() signature (from rtcm3.h):
- *   int rtcm3_find_frame(const uint8_t *buf, size_t buf_len,
- *                        size_t *frame_start, size_t *payload_len);
- *   Returns 1 if a valid frame was found, 0 otherwise.
  *
  * Returns:
  *   > 0   bytes consumed (complete frame dispatched via callback)
@@ -244,6 +240,7 @@ static void *collector_thread(void *arg)
         int n = serial_read(&c->serial, tmp, sizeof(tmp));
 
         if (n > 0) {
+            log_debug("collector: received %d bytes, lead=0x%02x", n, tmp[0]); /* TEMP */
             for (int i = 0; i < n; i++) {
                 if (!ring_push(c, tmp[i])) {
                     /* Ring full — parser is falling behind.  Drop the rest
