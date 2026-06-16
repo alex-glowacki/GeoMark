@@ -141,6 +141,9 @@ static int try_rtcm3(Collector *c)
 
     int found = rtcm3_find_frame(buf, avail, &frame_start, &payload_len);
 
+    log_debug("collector: rtcm3_find_frame avail=%zu found=%d frame_start=%zu payload_len=%zu first_byte=0x%02x",
+              avail, found, frame_start, payload_len, buf[0]);
+
     if (!found) {
         /* No valid frame anywhere in the buffer.
          * If the first byte isn't 0xD3 it is definitely junk — drop it.
