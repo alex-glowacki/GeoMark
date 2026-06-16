@@ -236,7 +236,7 @@ static void *collector_thread(void *arg)
                     break;
             }
             parse_ring(c);
-        } else if (n == -(int)SERIAL_ERR_TIMEOUT) {
+        } else if (n == (int)SERIAL_ERR_TIMEOUT) {
             continue;
         } else if (n < 0) {
             log_error("collector: serial_read error %d on fd=%d, thread exiting", n, c->serial.fd);
