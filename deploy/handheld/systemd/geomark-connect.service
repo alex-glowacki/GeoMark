@@ -1,0 +1,13 @@
+[Unit]
+Description=GeoMark — connect handheld to rover AP
+After=network.target NetworkManager.service
+Wants=NetworkManager.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/geomark-connect.sh
+TimeoutStartSec=90
+
+[Install]
+WantedBy=multi-user.target
