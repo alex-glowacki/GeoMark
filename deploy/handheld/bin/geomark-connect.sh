@@ -14,7 +14,7 @@ fi
 
 # Wait for rover AP to be reachable
 elapsed=0
-until ping -c1 -W1 "$ROVER_IP" &/dev/null; do
+until ping -c1 -W1 "$ROVER_IP" >/dev/null 2>&1; do
     if (( elapsed >= TIMEOUT)); then
         echo "Timeout waiting for $ROVER_IP after ${TIMEOUT}s" >&2
         exit 1
