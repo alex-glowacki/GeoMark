@@ -10,18 +10,19 @@
 /* =========================================================================
  * Ring buffer helpers
  *
- * COLLECTOR_RING_SIZE is a power of two — all index arithmetic uses
- * bitwise AND instead of modulo.
+ * head and tail grow unbounded as size_t.  RING_MASK is applied only when
+ * indexing into c->ring[].  This makes ring_used() correct across wraps:
+ *   used = head - tail          (unsigned subtraction, always correct)
+ *   idx  = head & RING_MASK     (maps to [0, RING_SIZE-1])
  * ========================================================================= */
 
 #define RING_MASK ((size_t)(COLLECTOR_RING_SIZE - 1))
 
 static inline size_t ring_used(const Collector *c) {
-    return (c->head - c->tail) & RING_MASK;
+    return c->head - c->tail;   /* unsigned: correct across size_t wrap */
 }
 
 static inline size_t ring_free(const Collector *c) {
-    /* One slot kept empty so head == tail unambiguously means "empty". */
     return COLLECTOR_RING_SIZE - 1 - ring_used(c);
 }
 
@@ -34,7 +35,7 @@ static int ring_push(Collector *c, uint8_t byte) {
     if (ring_free(c) == 0)
         return 0;
     c->ring[c->head & RING_MASK] = byte;
-    c->head = (c->head + 1) & RING_MASK;
+    c->head++;                  /* unbounded increment — do NOT mask */
     return 1;
 }
 
@@ -46,7 +47,7 @@ static inline uint8_t ring_peek(const Collector *c, size_t offset) {
 
 /* Advance tail by 'n', discarding those bytes. */
 static inline void ring_discard(Collector *c, size_t n) {
-    c->tail = (c->tail + n) & RING_MASK;
+    c->tail += n;               /* unbounded increment — do NOT mask */
 }
 
 /* Copy 'n' bytes from tail into dst without advancing tail.
@@ -85,8 +86,6 @@ static int try_nmea(Collector *c) {
     }
 
     if (sentence_len == 0) {
-        /* No terminator yet.  If we already hold a full frame's worth of
-         * data with no '\r\n', the '$' is garbage — discard it. */
         if (avail >= COLLECTOR_FRAME_MAX)
             return -1;
         return 0;
@@ -95,7 +94,6 @@ static int try_nmea(Collector *c) {
     if (sentence_len > COLLECTOR_FRAME_MAX)
         return -1;
 
-    /* Linearise into a stack buffer for checksum validation and parsing. */
     uint8_t buf[COLLECTOR_FRAME_MAX + 1];
     ring_copy_to(c, buf, sentence_len);
     buf[sentence_len] = '\0';
@@ -103,7 +101,6 @@ static int try_nmea(Collector *c) {
     if (!nmea_checksum_valid((const char *)buf))
         return -1;
 
-    /* Build the frame. */
     CollectorFrame frame;
     memset(&frame, 0, sizeof(frame));
     frame.type = COLLECTOR_FRAME_NMEA;
@@ -124,7 +121,8 @@ static int try_nmea(Collector *c) {
  * RTCM3 frame parser
  *
  * Returns:
- *   > 0   bytes consumed (complete frame dispatched via callback)
+ *   > 0   bytes consumed (complete frame dispatched via callback, OR junk
+ *         bytes discarded before a valid frame — parse_ring re-enters)
  *     0   not enough data yet
  *   < 0   bad framing at current tail
  * ========================================================================= */
@@ -138,22 +136,28 @@ static int try_rtcm3(Collector *c)
     uint8_t buf[COLLECTOR_RING_SIZE];
     ring_copy_to(c, buf, avail);
 
-    size_t frame_start = 0;
-    size_t payload_len = 0;
+    size_t frame_start  = 0;
+    size_t payload_len  = 0;
 
     int found = rtcm3_find_frame(buf, avail, &frame_start, &payload_len);
 
     if (!found) {
+        /* No valid frame anywhere in the buffer.
+         * If the first byte isn't 0xD3 it is definitely junk — drop it.
+         * If it IS 0xD3 we need more data. */
         if (buf[0] != RTCM3_PREAMBLE)
             return -1;
         return 0;
     }
 
     if (frame_start > 0) {
-        ring_discard(c, frame_start);
-        return 0;
+        /* Valid frame exists but there is junk before it.
+         * Return the junk count — parse_ring will discard those bytes
+         * and immediately re-enter, where we will find the frame at offset 0. */
+        return (int)frame_start;
     }
 
+    /* frame_start == 0: valid frame sits at the current tail. */
     size_t frame_len = 3 + payload_len + 3;
 
     if (frame_len > COLLECTOR_FRAME_MAX)
@@ -181,7 +185,7 @@ static int try_rtcm3(Collector *c)
 void parse_ring(Collector *c)
 {
     while (!ring_empty(c)) {
-        uint8_t lead = ring_peek(c, 0);
+        uint8_t lead     = ring_peek(c, 0);
         int     consumed;
 
         if (lead == '$') {
@@ -198,7 +202,7 @@ void parse_ring(Collector *c)
         } else if (consumed < 0) {
             ring_discard(c, 1);
         } else {
-            break;
+            break; /* need more data */
         }
     }
 }
@@ -216,9 +220,8 @@ static void *collector_thread(void *arg)
 
         if (n > 0) {
             for (int i = 0; i < n; i++) {
-                if (!ring_push(c, tmp[i])) {
+                if (!ring_push(c, tmp[i]))
                     break;
-                }
             }
             parse_ring(c);
         } else if (n == -(int)SERIAL_ERR_TIMEOUT) {
@@ -280,8 +283,8 @@ SerialResult collector_start_from_port(Collector *c, SerialPort *port,
         return SERIAL_ERR_ARG;
 
     memset(c, 0, sizeof(*c));
-    c->serial    = *port;   /* copy the SerialPort struct (fd, baud, timeout) */
-    c->owns_port = 0;       /* caller owns the fd — we must not close it */
+    c->serial    = *port;
+    c->owns_port = 0;
 
     return start_thread(c, callback, user);
 }
