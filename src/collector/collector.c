@@ -32,7 +32,7 @@ static inline int ring_empty(const Collector *c) {
 
 /* Write one byte. Returns 1 on success, 0 if the buffer is full. */
 static int ring_push(Collector *c, uint8_t byte) {
-    if (ring_used(c) >= COLLECTOR_RING_SIZE - 1)
+    if (ring_free(c) == 0)
         return 0;
     c->ring[c->head & RING_MASK] = byte;
     c->head++;
@@ -239,6 +239,7 @@ static void *collector_thread(void *arg)
         } else if (n == -(int)SERIAL_ERR_TIMEOUT) {
             continue;
         } else if (n < 0) {
+            log_error("collector: serial_read error %d on fd=%d, thread exiting", n, c->serial.fd);
             break;
         }
     }
