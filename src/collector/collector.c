@@ -224,10 +224,13 @@ static void *collector_thread(void *arg)
 
         if (n > 0) {
             log_debug("collector: read %d bytes from fd=%d", n, c->serial.fd);
+            int pushed = 0;
             for (int i = 0; i < n; i++) {
                 if (!ring_push(c, tmp[i]))
                     break;
+                pushed++;
             }
+            log_debug("collector: pushed %d bytes, ring_used=%zu fd=%d", pushed, ring_used(c), c->serial.fd);
             parse_ring(c);
         } else if (n == -(int)SERIAL_ERR_TIMEOUT) {
             continue;
