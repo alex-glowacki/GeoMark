@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-PROFILE="geomark-client"
+PROFILE="geomark-rover"
 ROVER_IP="192.168.10.1"
 TIMEOUT=60  # seconds to wait for rover AP
 INTERVAL=2
