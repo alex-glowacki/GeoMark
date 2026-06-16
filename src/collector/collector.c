@@ -294,7 +294,6 @@ SerialResult collector_start_from_port(Collector *c, SerialPort *port,
     if (!c || !port || port->fd == -1 || !callback)
         return SERIAL_ERR_ARG;
 
-    memset(c, 0, sizeof(*c));
     c->serial    = *port;
     c->owns_port = 0;
 
