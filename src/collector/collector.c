@@ -196,6 +196,7 @@ void parse_ring(Collector *c)
         } else if (lead == RTCM3_PREAMBLE) {
             consumed = try_rtcm3(c);
         } else {
+            log_debug("collector: discarding unknown byte 0x%02x", lead);
             ring_discard(c, 1);
             continue;
         }
