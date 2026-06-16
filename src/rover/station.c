@@ -203,9 +203,9 @@ gm_status_t rover_station_run(const char *config_path)
     log_info("rover: radio opened on %s", cfg.radio_device);
 
     /* --- GNSS collector ------------------------------------------------- */
-    /* Pass um980's existing fd — no close/reopen. owns_port=0. */
     Collector gnss_collector;
     memset(&gnss_collector, 0, sizeof(gnss_collector));
+    gnss_collector.mode = COLLECTOR_MODE_NMEA;  /* UM980 rover outputs NMEA only */
 
     sr = collector_start_from_port(&gnss_collector, &um980.serial,
                                    gnss_callback, &fix_state);
@@ -219,11 +219,10 @@ gm_status_t rover_station_run(const char *config_path)
     log_info("rover: GNSS collector running");
 
     /* --- Radio collector ------------------------------------------------ */
-    /* Pass radio's existing fd — no close/reopen. owns_port=0.
-     * radio_callback writes corrections via um980.serial. */
     RadioCallbackCtx radio_ctx = { .um980 = &um980 };
     Collector radio_collector;
     memset(&radio_collector, 0, sizeof(radio_collector));
+    radio_collector.mode = COLLECTOR_MODE_RTCM3;  /* SiK radio delivers RTCM3 only */
 
     sr = collector_start_from_port(&radio_collector, &radio.serial,
                                    radio_callback, &radio_ctx);
@@ -289,8 +288,8 @@ gm_status_t rover_station_run(const char *config_path)
     /* --- Cleanup (reverse init order) ---------------------------------- */
     if (ss == GM_OK)
         stream_server_stop();
-    collector_stop(&radio_collector);  /* owns_port=0, does not close fd */
-    collector_stop(&gnss_collector);   /* owns_port=0, does not close fd */
+    collector_stop(&radio_collector);
+    collector_stop(&gnss_collector);
     radio_close(&radio);
     um980_close(&um980);
     pthread_mutex_destroy(&fix_state.mutex);
