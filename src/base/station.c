@@ -47,9 +47,8 @@ typedef struct {
 
 static void base_callback(const CollectorFrame *frame, void *user)
 {
-    if (frame->type != COLLECTOR_FRAME_RTCM3) {
+    if (frame->type != COLLECTOR_FRAME_RTCM3)
         return;
-    }
 
     BaseCallbackCtx *ctx = (BaseCallbackCtx *)user;
     SerialResult r = radio_write(ctx->radio, frame->data, frame->len);
@@ -75,9 +74,8 @@ gm_status_t base_station_run(const char *config_path)
         config_defaults(&cfg);
     }
 
-    if (cfg.log_file[0] != '\0') {
+    if (cfg.log_file[0] != '\0')
         log_init(cfg.log_file);
-    }
 
     log_info("base: serial=%s baud=%d  radio=%s baud=%d",
              cfg.serial_device, cfg.serial_baud,
@@ -115,13 +113,10 @@ gm_status_t base_station_run(const char *config_path)
     log_info("base: radio opened on %s", cfg.radio_device);
 
     /* --- Collector ------------------------------------------------------- */
-    /* Pass the Um980's existing fd directly to the collector — no
-     * close/reopen cycle. On ttyAMA0, closing and reopening the fd causes
-     * select() to stop firing on the new fd. The collector does not own
-     * the port (owns_port=0); um980_close() handles cleanup below. */
     BaseCallbackCtx ctx = { .radio = &radio };
     Collector collector;
     memset(&collector, 0, sizeof(collector));
+    collector.mode = COLLECTOR_MODE_RTCM3;  /* UM980 base outputs RTCM3 only */
 
     sr = collector_start_from_port(&collector, &um980.serial,
                                    base_callback, &ctx);
@@ -141,16 +136,15 @@ gm_status_t base_station_run(const char *config_path)
     sigaction(SIGINT,  &sa, NULL);
     sigaction(SIGTERM, &sa, NULL);
 
-    while (g_running) {
+    while (g_running)
         pause();
-    }
 
     log_info("base: shutting down");
 
     /* --- Cleanup (reverse init order) ----------------------------------- */
-    collector_stop(&collector);  /* does not close the fd (owns_port=0) */
+    collector_stop(&collector);
     radio_close(&radio);
-    um980_close(&um980);         /* closes the fd the collector was using */
+    um980_close(&um980);
 
     log_info("base: shutdown complete");
     return GM_OK;

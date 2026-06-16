@@ -19,7 +19,7 @@
 #define RING_MASK ((size_t)(COLLECTOR_RING_SIZE - 1))
 
 static inline size_t ring_used(const Collector *c) {
-    return c->head - c->tail;   /* unsigned: correct across size_t wrap */
+    return c->head - c->tail;
 }
 
 static inline size_t ring_free(const Collector *c) {
@@ -35,7 +35,7 @@ static int ring_push(Collector *c, uint8_t byte) {
     if (ring_free(c) == 0)
         return 0;
     c->ring[c->head & RING_MASK] = byte;
-    c->head++;                  /* unbounded increment — do NOT mask */
+    c->head++;
     return 1;
 }
 
@@ -47,7 +47,7 @@ static inline uint8_t ring_peek(const Collector *c, size_t offset) {
 
 /* Advance tail by 'n', discarding those bytes. */
 static inline void ring_discard(Collector *c, size_t n) {
-    c->tail += n;               /* unbounded increment — do NOT mask */
+    c->tail += n;
 }
 
 /* Copy 'n' bytes from tail into dst without advancing tail.
@@ -69,18 +69,16 @@ static void ring_copy_to(const Collector *c, uint8_t *dst, size_t n) {
 static int try_nmea(Collector *c) {
     size_t avail = ring_used(c);
 
-    /* Shortest valid NMEA sentence: "$XX*HH\r\n" = 9 bytes */
     if (avail < 9)
         return 0;
 
     if (ring_peek(c, 0) != '$')
         return -1;
 
-    /* Scan for '\r\n' terminator. */
     size_t sentence_len = 0;
     for (size_t i = 1; i + 1 < avail; i++) {
         if (ring_peek(c, i) == '\r' && ring_peek(c, i + 1) == '\n') {
-            sentence_len = i + 2; /* total bytes including '\r\n' */
+            sentence_len = i + 2;
             break;
         }
     }
@@ -114,7 +112,6 @@ static int try_nmea(Collector *c) {
     }
 
     c->callback(&frame, c->user);
-    log_debug("collector: dispatched NMEA frame len=%zu fd=%d", sentence_len, c->serial.fd);
     return (int)sentence_len;
 }
 
@@ -123,7 +120,7 @@ static int try_nmea(Collector *c) {
  *
  * Returns:
  *   > 0   bytes consumed (complete frame dispatched via callback, OR junk
- *         bytes discarded before a valid frame — parse_ring re-enters)
+ *         bytes before a valid frame — parse_ring re-enters immediately)
  *     0   not enough data yet
  *   < 0   bad framing at current tail
  * ========================================================================= */
@@ -137,31 +134,23 @@ static int try_rtcm3(Collector *c)
     uint8_t buf[COLLECTOR_RING_SIZE];
     ring_copy_to(c, buf, avail);
 
-    size_t frame_start  = 0;
-    size_t payload_len  = 0;
+    size_t frame_start = 0;
+    size_t payload_len = 0;
 
     int found = rtcm3_find_frame(buf, avail, &frame_start, &payload_len);
 
-    log_debug("collector: rtcm3_find_frame avail=%zu found=%d frame_start=%zu payload_len=%zu first_byte=0x%02x",
-              avail, found, frame_start, payload_len, buf[0]);
-
     if (!found) {
-        /* No valid frame anywhere in the buffer.
-         * If the first byte isn't 0xD3 it is definitely junk — drop it.
-         * If it IS 0xD3 we need more data. */
         if (buf[0] != RTCM3_PREAMBLE)
             return -1;
         return 0;
     }
 
     if (frame_start > 0) {
-        /* Valid frame exists but there is junk before it.
-         * Return the junk count — parse_ring will discard those bytes
-         * and immediately re-enter, where we will find the frame at offset 0. */
+        /* Junk bytes precede a valid frame — return the count so parse_ring
+         * discards them and immediately re-enters to find the frame. */
         return (int)frame_start;
     }
 
-    /* frame_start == 0: valid frame sits at the current tail. */
     size_t frame_len = 3 + payload_len + 3;
 
     if (frame_len > COLLECTOR_FRAME_MAX)
@@ -188,19 +177,36 @@ static int try_rtcm3(Collector *c)
  * ========================================================================= */
 void parse_ring(Collector *c)
 {
-    log_debug("collector: parse_ring entered, ring_used=%zu fd=%d", ring_used(c), c->serial.fd);
     while (!ring_empty(c)) {
         uint8_t lead     = ring_peek(c, 0);
         int     consumed;
 
-        if (lead == '$') {
-            consumed = try_nmea(c);
-        } else if (lead == RTCM3_PREAMBLE) {
-            consumed = try_rtcm3(c);
+        if (c->mode == COLLECTOR_MODE_RTCM3) {
+            /* RTCM3-only — discard anything that isn't 0xD3 */
+            if (lead == RTCM3_PREAMBLE) {
+                consumed = try_rtcm3(c);
+            } else {
+                ring_discard(c, 1);
+                continue;
+            }
+        } else if (c->mode == COLLECTOR_MODE_NMEA) {
+            /* NMEA-only — discard anything that isn't '$' */
+            if (lead == '$') {
+                consumed = try_nmea(c);
+            } else {
+                ring_discard(c, 1);
+                continue;
+            }
         } else {
-            log_debug("collector: discarding unknown byte 0x%02x", lead);
-            ring_discard(c, 1);
-            continue;
+            /* AUTO — try both */
+            if (lead == '$') {
+                consumed = try_nmea(c);
+            } else if (lead == RTCM3_PREAMBLE) {
+                consumed = try_rtcm3(c);
+            } else {
+                ring_discard(c, 1);
+                continue;
+            }
         }
 
         if (consumed > 0) {
@@ -208,7 +214,7 @@ void parse_ring(Collector *c)
         } else if (consumed < 0) {
             ring_discard(c, 1);
         } else {
-            break; /* need more data */
+            break;
         }
     }
 }
@@ -225,14 +231,10 @@ static void *collector_thread(void *arg)
         int n = serial_read(&c->serial, tmp, sizeof(tmp));
 
         if (n > 0) {
-            log_debug("collector: read %d bytes from fd=%d", n, c->serial.fd);
-            int pushed = 0;
             for (int i = 0; i < n; i++) {
                 if (!ring_push(c, tmp[i]))
                     break;
-                pushed++;
             }
-            log_debug("collector: pushed %d bytes, ring_used=%zu fd=%d", pushed, ring_used(c), c->serial.fd);
             parse_ring(c);
         } else if (n == -(int)SERIAL_ERR_TIMEOUT) {
             continue;
@@ -273,7 +275,7 @@ SerialResult collector_start(Collector *c, const char *device, int baud,
     memset(c, 0, sizeof(*c));
     c->owns_port = 1;
 
-    SerialResult r = serial_open(&c->serial, device, baud, 100 /* ms timeout */);
+    SerialResult r = serial_open(&c->serial, device, baud, 100);
     if (r != SERIAL_OK)
         return r;
 
