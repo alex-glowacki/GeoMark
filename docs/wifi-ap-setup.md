@@ -1,7 +1,12 @@
-# GeoMark WiFi AP Setup — Pi Zero 2 W (Pole-Top)
+# GeoMark WiFi AP Setup — geomark-rover (Pi Zero 2 W)
 
-Perform these steps once on the Zero 2 W OS. After this, the
-`geomark-rover` WiFi hotspot starts automatically on boot.
+Perform these steps once on `geomark-rover`. After this, the `geomark-rover`
+WiFi AP starts automatically on boot at `192.168.10.1/24`.
+
+> **Subnet note:** The rover AP uses `192.168.10.x`. Home network uses
+> `10.0.0.x`. These must not overlap.
+
+---
 
 ## 1. Install packages
 
@@ -11,59 +16,62 @@ sudo apt install -y hostapd dnsmasq
 sudo systemctl unmask hostapd
 ```
 
+---
+
 ## 2. Assign static IP to wlan0
 
-Edit `/etc/dhcpcd.conf`, add at the end:
+Edit `/etc/dhcpcd.conf`, append:
+
+```
 interface wlan0
-
-static ip_address=10.0.0.1/24
-
+static ip_address=192.168.10.1/24
 nohook wpa_supplicant
+```
+
+---
 
 ## 3. Configure hostapd
 
 Create `/etc/hostapd/hostapd.conf`:
+
+```
 interface=wlan0
-
 driver=nl80211
-
 ssid=geomark-rover
-
 hw_mode=g
-
 channel=6
-
 wmm_enabled=0
-
 macaddr_acl=0
-
 auth_algs=1
-
 wpa=2
-
 wpa_passphrase=geomark2024
-
 wpa_key_mgmt=WPA-PSK
-
 wpa_pairwise=TKIP
-
 rsn_pairwise=CCMP
+```
 
 Point the daemon at this file — edit `/etc/default/hostapd`:
+
+```
 DAEMON_CONF="/etc/hostapd/hostapd.conf"
+```
+
+---
 
 ## 4. Configure dnsmasq
-
-Back up the original and replace `/etc/dnsmasq.conf`:
 
 ```bash
 sudo mv /etc/dnsmasq.conf /etc/dnsmasq.conf.orig
 ```
 
 Create new `/etc/dnsmasq.conf`:
-interface=wlan0
 
-dhcp-range=10.0.0.2,10.0.0.20,255.255.255.0,24h
+```
+interface=wlan0
+dhcp-range=192.168.10.2,192.168.10.20,255.255.255.0,24h
+```
+
+---
 
 ## 5. Enable and start services
 
@@ -74,39 +82,59 @@ sudo systemctl start hostapd
 sudo systemctl start dnsmasq
 ```
 
-## 6. Verify
+---
 
-On the Pi 5, scan for networks:
+## 6. Verify from geomark-handheld
 
 ```bash
-sudo iwlist wlan0 scan | grep geomark-rover
+# Connect to rover AP
+sudo nmcli connection up geomark-client
+
+# Test reachability
+ping 192.168.10.1
+
+# SSH in
+ssh geomark-rover
 ```
 
-Then connect and ping:
+---
+
+## nmcli Profiles on geomark-handheld
+
+| Profile | SSID | Purpose |
+|---------|------|---------|
+| `home-wifi` | home network | internet, geomark-base reachable |
+| `geomark-client` | `geomark-rover` | rover AP, stream client |
+
+To toggle between them:
 
 ```bash
-sudo wpa_passphrase geomark-rover geomark2024 | sudo tee /etc/wpa_supplicant/wpa_supplicant.conf
-sudo wpa_supplicant -B -i wlan0 -c /etc/wpa_supplicant/wpa_supplicant.conf
-sudo dhclient wlan0
-ping 10.0.0.1
+sudo nmcli connection up home-wifi
+sudo nmcli connection up geomark-client   # brings down home-wifi automatically
 ```
 
-## 7. Test the stream end-to-end
+---
 
-On the Zero 2 W:
+## 7. Test stream end-to-end
+
+On `geomark-rover`:
+
 ```bash
-sudo build/pi-rover/geomark --mode rover
+sudo build/host/geomark --mode rover
 ```
 
-On the Pi 5:
+On `geomark-handheld` (after connecting to rover AP):
+
 ```bash
-sudo build/host/geomark --mode ui --host 10.0.0.1
+sudo build/host/geomark --mode ui --host 192.168.10.1
 ```
 
 For local host testing (no hardware):
+
 ```bash
-# Terminal 1 (simulates rover pole-top)
+# Terminal 1 — simulates rover
 sudo build/host/geomark --mode rover
-# Terminal 2 (simulates handheld)
+
+# Terminal 2 — simulates handheld
 sudo build/host/geomark --mode ui --host 127.0.0.1
 ```
