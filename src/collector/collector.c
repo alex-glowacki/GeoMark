@@ -187,6 +187,7 @@ static int try_rtcm3(Collector *c)
  * ========================================================================= */
 void parse_ring(Collector *c)
 {
+    log_debug("collector: parse_ring entered, ring_used=%zu fd=%d", ring_used(c), c->serial.fd);
     while (!ring_empty(c)) {
         uint8_t lead     = ring_peek(c, 0);
         int     consumed;
