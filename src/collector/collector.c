@@ -114,6 +114,7 @@ static int try_nmea(Collector *c) {
     }
 
     c->callback(&frame, c->user);
+    log_debug("collector: dispatched NMEA frame len=%zu fd=%d", sentence_len, c->serial.fd);
     return (int)sentence_len;
 }
 
