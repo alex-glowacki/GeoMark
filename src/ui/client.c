@@ -4,13 +4,15 @@
  *
  * Wires together:
  *   stream_client  →  packet callback  →  UISharedState (mutex-protected)
- *   touch_read()   →  survey_screen_touch() / session lifecycle
+ *   gpio_button_poll() → InputEvent → survey_screen_input()
  *   2 Hz loop      →  screen_update() OR survey_screen_tick()
  *                  →  survey_screen_feed() when capture active
  *
  * UI modes:
  *   CLIENT_MODE_STATUS  — RTK status screen (default)
  *   CLIENT_MODE_SURVEY  — Survey session active, survey_screen drives TFT
+ *
+ * Touch controller removed. TFT display retained.
  */
 
 #define _GNU_SOURCE
@@ -29,38 +31,34 @@
 #include "survey/export.h"
 #include "survey/survey.h"
 #include "ui/client.h"
+#include "ui/gpio_button.h"
+#include "ui/input.h"
 #include "ui/survey_screen.h"
 #include "ui/tft/display.h"
 #include "ui/tft/screen.h"
-#include "ui/tft/touch.h"
 #include "util/log.h"
 
 /* --------------------------------------------------------------------------
- * Hardware config — Pi 5 wiring
+ * Hardware config — Pi 5 TFT wiring (SPI0.0 only; touch removed)
  * -------------------------------------------------------------------------- */
 
-#define UI_SPI_DEVICE      "/dev/spidev0.0"
-#define UI_TOUCH_DEVICE    "/dev/spidev0.1"
-#define UI_DC_GPIO         24
-#define UI_RST_GPIO        25
-#define UI_IRQ_GPIO        23
+#define UI_SPI_DEVICE  "/dev/spidev0.0"
+#define UI_DC_GPIO     24
+#define UI_RST_GPIO    25
 
 /* 2 Hz render loop */
-#define UI_INTERVAL_MS     500u
-
-/* Touch debounce — minimum ms between accepted touch events */
-#define TOUCH_DEBOUNCE_MS  300u
+#define UI_INTERVAL_MS  500u
 
 /* SCP transfer timeout */
-#define SCP_TIMEOUT_S      30
+#define SCP_TIMEOUT_S   30
 
 /* --------------------------------------------------------------------------
  * Client display mode
  * -------------------------------------------------------------------------- */
 
 typedef enum {
-    CLIENT_MODE_STATUS = 0,  /* RTK status screen          */
-    CLIENT_MODE_SURVEY,      /* Survey session active       */
+    CLIENT_MODE_STATUS = 0,  /* RTK status screen  */
+    CLIENT_MODE_SURVEY,      /* Survey session active */
 } ClientMode;
 
 /* --------------------------------------------------------------------------
@@ -127,10 +125,6 @@ static uint32_t monotonic_ms(void)
  * Session helpers
  * -------------------------------------------------------------------------- */
 
-/**
- * Build a session name from the current UTC time: "YYYYMMDD_HHMMSS".
- * Writes into @p buf (must be at least 20 bytes).
- */
 static void make_session_name(char *buf, size_t len)
 {
     time_t     now = time(NULL);
@@ -138,11 +132,6 @@ static void make_session_name(char *buf, size_t len)
     strftime(buf, len, "%Y%m%d_%H%M%S", utc);
 }
 
-/**
- * Open a survey session: resolve output directory, build the CSV path,
- * call survey_session_open().
- * Returns 0 on success, -1 on failure.
- */
 static int start_session(SurveySession *session, char *csv_path_out,
                          size_t csv_path_len)
 {
@@ -163,10 +152,6 @@ static int start_session(SurveySession *session, char *csv_path_out,
     return 0;
 }
 
-/**
- * Close the session and optionally SCP the CSV to Windows.
- * Always closes cleanly even if SCP fails.
- */
 static void end_session(SurveySession *session, const char *csv_path)
 {
     uint32_t n = session->point_count;
@@ -205,12 +190,14 @@ gm_status_t ui_client_run(const char *pole_top_host)
     screen_init();
     log_info("ui_client: TFT display ready");
 
-    /* --- Touch controller ----------------------------------------------- */
-    gm_status_t ts = touch_open(UI_TOUCH_DEVICE, UI_IRQ_GPIO);
-    if (ts != GM_OK) {
-        log_warn("ui_client: touch_open failed — touch input disabled");
-        /* Non-fatal: status screen still works without touch */
+    /* --- GPIO buttons --------------------------------------------------- */
+    gm_status_t bs = gpio_button_open();
+    if (bs != GM_OK) {
+        log_error("ui_client: gpio_button_open failed");
+        display_close();
+        return GM_ERR_IO;
     }
+    log_info("ui_client: GPIO buttons ready");
 
     /* --- Shared fix state ----------------------------------------------- */
     UISharedState shared;
@@ -222,7 +209,7 @@ gm_status_t ui_client_run(const char *pole_top_host)
                                           packet_callback, &shared);
     if (cs != GM_OK) {
         log_error("ui_client: stream_client_start failed");
-        touch_close();
+        gpio_button_close();
         display_close();
         pthread_mutex_destroy(&shared.mutex);
         return GM_ERR_IO;
@@ -250,9 +237,6 @@ gm_status_t ui_client_run(const char *pole_top_host)
 
     ClientMode mode = CLIENT_MODE_STATUS;
 
-    /* --- Touch debounce ------------------------------------------------- */
-    uint32_t last_touch_ms = 0;
-
     log_info("ui_client: render loop running");
 
     /* --- Main loop at 2 Hz --------------------------------------------- */
@@ -268,30 +252,26 @@ gm_status_t ui_client_run(const char *pole_top_host)
         pthread_mutex_unlock(&shared.mutex);
 
         /* ---------------------------------------------------------------- */
-        /* Touch input                                                       */
+        /* Button input                                                      */
         /* ---------------------------------------------------------------- */
-        gm_touch_point_t tp;
-        if (touch_read(&tp) && tp.z > 0 &&
-            (now - last_touch_ms) >= TOUCH_DEBOUNCE_MS) {
+        InputEvent ev = gpio_button_poll();
 
-            last_touch_ms = now;
-
+        if (ev != INPUT_NONE) {
             if (mode == CLIENT_MODE_STATUS) {
-                /* Status screen: tapping anywhere starts a session */
-                log_info("ui_client: touch on status screen — starting survey");
-
-                if (start_session(&session, csv_path, sizeof(csv_path)) == 0) {
-                    survey_screen_init(&survey_ctx, &codelist);
-                    mode = CLIENT_MODE_SURVEY;
+                /* Status screen: Center starts a survey session */
+                if (ev == INPUT_BTN_CENTER) {
+                    log_info("ui_client: center button — starting survey");
+                    if (start_session(&session, csv_path,
+                                      sizeof(csv_path)) == 0) {
+                        survey_screen_init(&survey_ctx, &codelist);
+                        mode = CLIENT_MODE_SURVEY;
+                    }
                 }
-
             } else {
-                /* Survey mode: forward touch to survey screen */
-                survey_screen_touch(&survey_ctx, tp.x, tp.y, &session);
+                /* Survey mode: forward event to survey screen */
+                survey_screen_input(&survey_ctx, ev, &session);
 
-                /* Check if the user ended the session via the idle screen
-                 * [End Session] button — survey_ctx returns to IDLE with
-                 * an open session when that happens. We detect it here. */
+                /* Detect session end: state returns to IDLE with open session */
                 if (survey_ctx.state == SURVEY_UI_IDLE && session.open) {
                     end_session(&session, csv_path);
                     memset(&session, 0, sizeof(session));
@@ -337,7 +317,7 @@ gm_status_t ui_client_run(const char *pole_top_host)
 
     /* --- Cleanup (reverse init order) ---------------------------------- */
     stream_client_stop();
-    touch_close();
+    gpio_button_close();
     display_close();
     pthread_mutex_destroy(&shared.mutex);
 

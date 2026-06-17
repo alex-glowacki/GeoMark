@@ -42,8 +42,8 @@ set(GEOMARK_SOURCES
     src/survey/codelist.c
     src/survey/export.c
     src/ui/tft/display.c
-    src/ui/tft/touch.c
     src/ui/tft/screen.c
+    src/ui/gpio_button.c
     src/ui/survey_screen.c
     src/ui/client.c
     src/util/config.c
