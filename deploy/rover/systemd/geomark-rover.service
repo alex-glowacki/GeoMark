@@ -1,11 +1,13 @@
 [Unit]
 Description=GeoMark Rover
-After=network.target
+After=network.target dev-ttyAMA0.device
+Wants=dev-ttyAMA0.device
 
 [Service]
 Type=simple
+User=pi
 ExecStart=/usr/local/bin/geomark --mode rover --config /etc/geomark/geomark.conf
-Restart=on-failure
+Restart=always
 RestartSec=5
 StandardOutput=journal
 StandardError=journal

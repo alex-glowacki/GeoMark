@@ -1,0 +1,15 @@
+[Unit]
+Description=GeoMark Handheld UI
+After=geomark-connect.service
+Requires=geomark-connect.service
+
+[Service]
+Type=simple
+User=alex
+ExecStart=/usr/local/bin/geomark --mode ui --host 192.168.10.1
+Restart=always
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
