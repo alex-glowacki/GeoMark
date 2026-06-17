@@ -149,15 +149,6 @@ static void draw_focus_border(uint16_t x, uint16_t y, uint16_t w, uint16_t h)
     display_fill_rect(x + w - 2, y,         2,  h, COL_FOCUS_BORDER);
 }
 
-static void clear_focus_border(uint16_t x, uint16_t y, uint16_t w, uint16_t h,
-                               uint16_t bg)
-{
-    display_fill_rect(x,         y,         w,  2, bg);
-    display_fill_rect(x,         y + h - 2, w,  2, bg);
-    display_fill_rect(x,         y,         2,  h, bg);
-    display_fill_rect(x + w - 2, y,         2,  h, bg);
-}
-
 static void draw_divider(uint16_t y)
 {
     display_fill_rect(0, y, TFT_WIDTH, 2, COL_CHROME);
