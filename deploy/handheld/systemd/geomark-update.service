@@ -1,0 +1,15 @@
+[Unit]
+Description=GeoMark OTA update
+After=network.target NetworkManager.service
+Wants=NetworkManager.service
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/local/bin/geomark-update.sh
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=600
+
+[Install]
+WantedBy=multi-user.target
