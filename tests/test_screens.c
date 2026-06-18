@@ -4,6 +4,7 @@
 
 #include "../src/ui/core/screen_stack.h"
 #include "../src/ui/screens/main_menu_screen.h"
+#include "../src/ui/screens/placeholder_screen.h"
 #include "../src/ui/screens/sleep_screen.h"
 
 /* =========================================================================
@@ -105,7 +106,25 @@ static void test_sleep_to_menu_to_stub_and_back(void)
     ASSERT(ui_stack_top(&stack)->ctx == &sleep_ctx, "Sleep is on top again");
 
     ui_stack_dispatch_event(&stack, back);
-    ASSERT(stack.depth == 1, "Back at the root (Sleep) is a no-op — never pops to empty");
+    ASSERT(stack.depth == 1, "Back at the root (Sleep) is a no-op -- never pops to empty");
+}
+
+/* =========================================================================
+ * Placeholder screen: never consumes anything, including BACK
+ * ========================================================================= */
+
+static void test_placeholder_always_unconsumed(void)
+{
+    PlaceholderScreenCtx ctx;
+    placeholder_screen_init(&ctx, "Test message");
+
+    UiScreen s = placeholder_screen_as_ui_screen(&ctx);
+
+    UiEvent activate = { .type = UI_EVENT_ACTIVATE };
+    ASSERT(!s.on_event(s.ctx, activate), "Placeholder never consumes ACTIVATE");
+
+    UiEvent back = { .type = UI_EVENT_BACK };
+    ASSERT(!s.on_event(s.ctx, back), "Placeholder lets BACK fall through to the stack");
 }
 
 /* =========================================================================
@@ -114,6 +133,7 @@ static void test_sleep_to_menu_to_stub_and_back(void)
 int main(void)
 {
     test_sleep_to_menu_to_stub_and_back();
+    test_placeholder_always_unconsumed();
 
     if (g_tests_failed == 0) {
         printf("All %d screen tests passed.\n", g_tests_run);

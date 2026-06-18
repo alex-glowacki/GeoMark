@@ -46,6 +46,7 @@ set(GEOMARK_SOURCES
     src/ui/gpio_button.c
     src/ui/survey_screen.c
     src/ui/client.c
+    src/ui/preview.c
     src/ui/core/widget.c
     src/ui/core/widget_draw.c
     src/ui/core/screen_stack.c
@@ -53,6 +54,8 @@ set(GEOMARK_SOURCES
     src/ui/screens/sleep_screen_draw.c
     src/ui/screens/main_menu_screen.c
     src/ui/screens/main_menu_screen_draw.c
+    src/ui/screens/placeholder_screen.c
+    src/ui/screens/placeholder_screen_draw.c
     src/util/config.c
     src/util/log.c
     src/util/thread.c

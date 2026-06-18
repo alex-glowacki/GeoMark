@@ -57,14 +57,13 @@ target_include_directories(test_widget PRIVATE
 )
 add_test(NAME test_widget COMMAND test_widget)
 
-# test_screens: Sleep + Main Menu screens, end to end through the screen
-# stack. Unlike test_widget, this DOES link ui/tft/display.c — the screens'
-# on_render functions take display_* function addresses when building their
-# UiScreen vtables (sleep_screen_as_ui_screen / main_menu_screen_as_ui_screen),
-# so the symbols must resolve at link time even though the test never calls
-# display_open() and never invokes on_render. Matches the existing
-# test_collector convention of linking hardware-touching modules (serial.c,
-# radio.c) without exercising their actual I/O.
+# test_screens: Sleep + Main Menu + Placeholder screens, end to end through
+# the screen stack. Links ui/tft/display.c because the screens' on_render
+# functions take display_* function addresses when building their UiScreen
+# vtables, so the symbols must resolve at link time even though the test
+# never calls display_open() and never invokes on_render. Matches the
+# existing test_collector convention of linking hardware-touching modules
+# without exercising their actual I/O.
 add_executable(test_screens
     ${PROJECT_SOURCE_DIR}/tests/test_screens.c
     ${PROJECT_SOURCE_DIR}/src/ui/core/widget.c
@@ -74,6 +73,8 @@ add_executable(test_screens
     ${PROJECT_SOURCE_DIR}/src/ui/screens/sleep_screen_draw.c
     ${PROJECT_SOURCE_DIR}/src/ui/screens/main_menu_screen.c
     ${PROJECT_SOURCE_DIR}/src/ui/screens/main_menu_screen_draw.c
+    ${PROJECT_SOURCE_DIR}/src/ui/screens/placeholder_screen.c
+    ${PROJECT_SOURCE_DIR}/src/ui/screens/placeholder_screen_draw.c
     ${PROJECT_SOURCE_DIR}/src/ui/tft/display.c
     ${PROJECT_SOURCE_DIR}/src/util/log.c
 )

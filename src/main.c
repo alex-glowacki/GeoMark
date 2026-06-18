@@ -4,6 +4,7 @@
  *        base, rover, or UI station logic.
  */
 
+#include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -12,6 +13,7 @@
 #include "base/station.h"
 #include "rover/station.h"
 #include "ui/client.h"
+#include "ui/preview.h"
 #include "util/log.h"
 
 /* Default pole-top IP on the private geomark-rover WiFi network */
@@ -19,21 +21,26 @@
 
 static void print_usage(const char *prog) {
     fprintf(stderr,
-            "Usage: %s --mode <base|rover|ui> [--config <path>] [--host <ip>]\n"
+            "Usage: %s --mode <base|rover|ui> [--config <path>] [--host <ip>] [--ui-preview]\n"
             "\n"
             "  --mode base    Base station: read UM980, relay RTCM3 via radio\n"
             "  --mode rover   Rover pole-top: receive corrections, stream fixes via WiFi\n"
             "  --mode ui      Handheld (Pi 5): receive fixes from pole-top, drive TFT\n"
             "\n"
             "  --config <path>  Config file (default: /etc/geomark/geomark.conf)\n"
-            "  --host <ip>      Pole-top IP for UI mode (default: " DEFAULT_POLE_TOP_HOST ")\n",
+            "  --host <ip>      Pole-top IP for UI mode (default: " DEFAULT_POLE_TOP_HOST ")\n"
+            "  --ui-preview     With --mode ui: run the new screen-stack UI preview\n"
+            "                   (Sleep -> Main Menu -> placeholder screens) instead of\n"
+            "                   the production survey flow. Manual/SSH use only --\n"
+            "                   geomark-ui.service never passes this flag.\n",
             prog);
 }
 
 int main(int argc, char *argv[]) {
-    geomark_mode_t mode        = GEOMARK_MODE_UNKNOWN;
-    const char    *config_path = "/etc/geomark/geomark.conf";
+    geomark_mode_t mode          = GEOMARK_MODE_UNKNOWN;
+    const char    *config_path   = "/etc/geomark/geomark.conf";
     const char    *pole_top_host = DEFAULT_POLE_TOP_HOST;
+    bool           ui_preview    = false;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--mode") == 0 && i + 1 < argc) {
@@ -53,6 +60,8 @@ int main(int argc, char *argv[]) {
             config_path = argv[++i];
         } else if (strcmp(argv[i], "--host") == 0 && i + 1 < argc) {
             pole_top_host = argv[++i];
+        } else if (strcmp(argv[i], "--ui-preview") == 0) {
+            ui_preview = true;
         } else {
             fprintf(stderr, "Unknown argument: %s\n", argv[i]);
             print_usage(argv[0]);
@@ -66,17 +75,26 @@ int main(int argc, char *argv[]) {
         return EXIT_FAILURE;
     }
 
+    if (ui_preview && mode != GEOMARK_MODE_UI) {
+        fprintf(stderr, "Error: --ui-preview only applies to --mode ui.\n");
+        print_usage(argv[0]);
+        return EXIT_FAILURE;
+    }
+
     log_init(NULL); /* stderr logging until config is loaded */
 
     const char *mode_str = (mode == GEOMARK_MODE_BASE)  ? "base"  :
                            (mode == GEOMARK_MODE_ROVER) ? "rover" : "ui";
-    log_info("GeoMark %s starting in %s mode", GEOMARK_VERSION_STRING, mode_str);
+    log_info("GeoMark %s starting in %s mode%s", GEOMARK_VERSION_STRING, mode_str,
+             ui_preview ? " (UI PREVIEW)" : "");
 
     int ret;
     if (mode == GEOMARK_MODE_BASE) {
         ret = base_station_run(config_path);
     } else if (mode == GEOMARK_MODE_ROVER) {
         ret = rover_station_run(config_path);
+    } else if (ui_preview) {
+        ret = ui_preview_run();
     } else {
         ret = ui_client_run(pole_top_host);
     }
