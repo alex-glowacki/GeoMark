@@ -46,6 +46,9 @@ set(GEOMARK_SOURCES
     src/ui/gpio_button.c
     src/ui/survey_screen.c
     src/ui/client.c
+    src/ui/core/widget.c
+    src/ui/core/widget_draw.c
+    src/ui/core/screen_stack.c
     src/util/config.c
     src/util/log.c
     src/util/thread.c

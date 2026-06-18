@@ -39,3 +39,20 @@ add_geomark_test_threaded(test_collector
     ${PROJECT_SOURCE_DIR}/tests/test_collector.c
     ${PROJECT_SOURCE_DIR}/src/collector/collector.c
 )
+
+# test_widget: widget grid + screen stack logic only. Deliberately does NOT
+# link ui/tft/display.c, ui/gpio_button.c, or anything SPI/GPIO-related —
+# the whole point of the widget.c / widget_draw.c split is that the focus,
+# hit-testing, and event-handling logic has no display dependency and runs
+# on host with no Pi attached.
+add_executable(test_widget
+    ${PROJECT_SOURCE_DIR}/tests/test_widget.c
+    ${PROJECT_SOURCE_DIR}/src/ui/core/widget.c
+    ${PROJECT_SOURCE_DIR}/src/ui/core/screen_stack.c
+    ${PROJECT_SOURCE_DIR}/src/util/log.c
+)
+target_include_directories(test_widget PRIVATE
+    ${PROJECT_SOURCE_DIR}/include
+    ${PROJECT_SOURCE_DIR}/src
+)
+add_test(NAME test_widget COMMAND test_widget)
