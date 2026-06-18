@@ -49,6 +49,10 @@ set(GEOMARK_SOURCES
     src/ui/core/widget.c
     src/ui/core/widget_draw.c
     src/ui/core/screen_stack.c
+    src/ui/screens/sleep_screen.c
+    src/ui/screens/sleep_screen_draw.c
+    src/ui/screens/main_menu_screen.c
+    src/ui/screens/main_menu_screen_draw.c
     src/util/config.c
     src/util/log.c
     src/util/thread.c
