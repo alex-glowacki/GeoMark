@@ -35,6 +35,7 @@ set(GEOMARK_SOURCES
     src/collector/collector.c
     src/collector/points.c
     src/collector/coords.c
+    src/collector/job_metadata.c
     src/collector/export.c
     src/net/stream_server.c
     src/net/stream_client.c
@@ -58,6 +59,10 @@ set(GEOMARK_SOURCES
     src/ui/screens/main_menu_screen_draw.c
     src/ui/screens/new_project_screen.c
     src/ui/screens/new_project_screen_draw.c
+    src/ui/screens/job_setup_screen.c
+    src/ui/screens/job_setup_screen_draw.c
+    src/ui/screens/job_create_screen.c
+    src/ui/screens/job_create_screen_draw.c
     src/ui/screens/placeholder_screen.c
     src/ui/screens/placeholder_screen_draw.c
     src/util/config.c
@@ -68,6 +73,8 @@ add_executable(geomark ${GEOMARK_SOURCES})
 # Link pthreads (required for util/thread.c, stream_server.c, stream_client.c)
 find_package(Threads REQUIRED)
 target_link_libraries(geomark PRIVATE Threads::Threads)
+# Link libm (required by collector/coords.c's trig/log/pow functions)
+target_link_libraries(geomark PRIVATE m)
 # Tests
 enable_testing()
 add_subdirectory(tests)

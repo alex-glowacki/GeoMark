@@ -73,13 +73,14 @@ target_include_directories(test_keyboard PRIVATE
 )
 add_test(NAME test_keyboard COMMAND test_keyboard)
 
-# test_screens: Sleep + Main Menu + New Project + Placeholder screens, end
-# to end through the screen stack. Links ui/tft/display.c because the
-# screens' on_render functions take display_* function addresses when
-# building their UiScreen vtables, so the symbols must resolve at link
-# time even though the test never calls display_open() and never invokes
-# on_render. Matches the existing test_collector convention of linking
-# hardware-touching modules without exercising their actual I/O.
+# test_screens: Sleep + Main Menu + New Project + Job Setup + Job Create +
+# Placeholder screens, end to end through the screen stack. Links
+# ui/tft/display.c because the screens' on_render functions take
+# display_* function addresses when building their UiScreen vtables, so
+# the symbols must resolve at link time even though the test never calls
+# display_open() and never invokes on_render. Matches the existing
+# test_collector convention of linking hardware-touching modules without
+# exercising their actual I/O.
 add_executable(test_screens
     ${PROJECT_SOURCE_DIR}/tests/test_screens.c
     ${PROJECT_SOURCE_DIR}/src/ui/core/widget.c
@@ -92,8 +93,13 @@ add_executable(test_screens
     ${PROJECT_SOURCE_DIR}/src/ui/screens/main_menu_screen_draw.c
     ${PROJECT_SOURCE_DIR}/src/ui/screens/new_project_screen.c
     ${PROJECT_SOURCE_DIR}/src/ui/screens/new_project_screen_draw.c
+    ${PROJECT_SOURCE_DIR}/src/ui/screens/job_setup_screen.c
+    ${PROJECT_SOURCE_DIR}/src/ui/screens/job_setup_screen_draw.c
+    ${PROJECT_SOURCE_DIR}/src/ui/screens/job_create_screen.c
+    ${PROJECT_SOURCE_DIR}/src/ui/screens/job_create_screen_draw.c
     ${PROJECT_SOURCE_DIR}/src/ui/screens/placeholder_screen.c
     ${PROJECT_SOURCE_DIR}/src/ui/screens/placeholder_screen_draw.c
+    ${PROJECT_SOURCE_DIR}/src/collector/job_metadata.c
     ${PROJECT_SOURCE_DIR}/src/ui/tft/display.c
     ${PROJECT_SOURCE_DIR}/src/util/log.c
 )
@@ -102,3 +108,30 @@ target_include_directories(test_screens PRIVATE
     ${PROJECT_SOURCE_DIR}/src
 )
 add_test(NAME test_screens COMMAND test_screens)
+
+# test_coords: WGS84 -> NAD83 North Dakota State Plane North Zone (Lambert
+# Conformal Conic) transform. Needs libm explicitly (sin/cos/tan/log/pow/
+# sqrt/isnan) -- this is the first test target with that dependency.
+add_executable(test_coords
+    ${PROJECT_SOURCE_DIR}/tests/test_coords.c
+    ${PROJECT_SOURCE_DIR}/src/collector/coords.c
+)
+target_include_directories(test_coords PRIVATE
+    ${PROJECT_SOURCE_DIR}/include
+    ${PROJECT_SOURCE_DIR}/src
+)
+target_link_libraries(test_coords PRIVATE m)
+add_test(NAME test_coords COMMAND test_coords)
+
+# test_job_metadata: defaults, unit coercion enforcement, and INI
+# save/load round-trip for job-level metadata.
+add_executable(test_job_metadata
+    ${PROJECT_SOURCE_DIR}/tests/test_job_metadata.c
+    ${PROJECT_SOURCE_DIR}/src/collector/job_metadata.c
+    ${PROJECT_SOURCE_DIR}/src/util/log.c
+)
+target_include_directories(test_job_metadata PRIVATE
+    ${PROJECT_SOURCE_DIR}/include
+    ${PROJECT_SOURCE_DIR}/src
+)
+add_test(NAME test_job_metadata COMMAND test_job_metadata)
