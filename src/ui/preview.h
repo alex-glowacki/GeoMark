@@ -7,13 +7,17 @@
  * Launch manually over SSH — geomark-ui.service does NOT use this path:
  *   geomark --mode ui --ui-preview
  *
- * Controls (legacy GPIO d-pad, until the DSI touch panel replaces it):
+ * Controls (GPIO d-pad and capacitive touch both active):
  *   Up/Down  — move focus
  *   Center   — activate the focused widget
  *   Left     — back (matches the existing project-wide "Left = back"
  *              convention; no current screen needs Left for horizontal
  *              navigation yet — see preview.c's translate_input())
  *   Right    — reserved, currently a no-op
+ *   Tap      — hit-tests against the focused screen's widgets, relocates
+ *              focus to the tapped widget, then activates it (see
+ *              ui/core/widget.c's ui_grid_handle_event()). Falls back to
+ *              button-only if no capacitive touch device is found.
  *   Ctrl+C   — exit
  */
 

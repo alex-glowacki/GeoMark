@@ -12,7 +12,11 @@
  *   CLIENT_MODE_STATUS  — RTK status screen (default)
  *   CLIENT_MODE_SURVEY  — Survey session active, survey_screen drives TFT
  *
- * Touch controller removed. TFT display retained.
+ * Drives the Hosyond 7" DSI panel via the framebuffer backend
+ * (ui/tft/display.c). Capacitive touch input is wired into the new
+ * --ui-preview widget UI (ui/preview.c) only -- this legacy survey-capture
+ * path has no widget grid to hit-test taps against, so it stays
+ * button-only for now (see ui/gpio_button.h).
  */
 
 #define _GNU_SOURCE
@@ -39,12 +43,10 @@
 #include "util/log.h"
 
 /* --------------------------------------------------------------------------
- * Hardware config — Pi 5 TFT wiring (SPI0.0 only; touch removed)
+ * Hardware config — Pi 5, Hosyond 7" DSI panel via framebuffer
  * -------------------------------------------------------------------------- */
 
-#define UI_SPI_DEVICE  "/dev/spidev0.0"
-#define UI_DC_GPIO     24
-#define UI_RST_GPIO    25
+#define UI_FB_DEVICE  "/dev/fb0"
 
 /* 2 Hz render loop */
 #define UI_INTERVAL_MS  500u
@@ -182,7 +184,7 @@ static void end_session(SurveySession *session, const char *csv_path)
 gm_status_t ui_client_run(const char *pole_top_host)
 {
     /* --- TFT display ---------------------------------------------------- */
-    gm_status_t ds = display_open(UI_SPI_DEVICE, UI_DC_GPIO, UI_RST_GPIO);
+    gm_status_t ds = display_open(UI_FB_DEVICE);
     if (ds != GM_OK) {
         log_error("ui_client: display_open failed");
         return GM_ERR_IO;
@@ -305,6 +307,7 @@ gm_status_t ui_client_run(const char *pole_top_host)
         } else {
             survey_screen_tick(&survey_ctx, now);
         }
+        display_present();
 
         usleep(UI_INTERVAL_MS * 1000u);
     }

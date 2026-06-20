@@ -10,10 +10,11 @@
  * is no parallel touch-only code path — see widget.c's
  * ui_grid_handle_event().
  *
- * Bridging from the legacy GPIO d-pad InputEvent, and later from the
- * evdev touch driver (once the new DSI panel is installed), both happen at
- * a single translation point when each input source is wired up — not
- * duplicated per screen.
+ * Bridging from the legacy GPIO d-pad InputEvent happens at a single
+ * translation point in ui/preview.c (translate_input()). The evdev touch
+ * driver (ui/core/touch_input.c) produces UiEvent{UI_EVENT_TAP, x, y}
+ * directly with no separate bridge -- both input sources feed into the
+ * same ui_stack_dispatch_event() call per tick.
  */
 
 #ifndef GEOMARK_UI_CORE_EVENT_H

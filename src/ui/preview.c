@@ -8,11 +8,13 @@
 #include "ui/preview.h"
 
 #include <signal.h>
+#include <stdbool.h>
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
 
 #include "ui/core/screen_stack.h"
+#include "ui/core/touch_input.h"
 #include "ui/gpio_button.h"
 #include "ui/input.h"
 #include "ui/screens/main_menu_screen.h"
@@ -22,9 +24,7 @@
 #include "util/log.h"
 
 /* Must match the wiring ui/client.c uses for the same physical panel. */
-#define PREVIEW_SPI_DEVICE "/dev/spidev0.0"
-#define PREVIEW_DC_GPIO    24
-#define PREVIEW_RST_GPIO   25
+#define PREVIEW_FB_DEVICE "/dev/fb0"
 
 #define PREVIEW_INTERVAL_MS 100u /* 10 Hz -- more responsive than the 2 Hz
                                   * production loop since there's no GNSS
@@ -49,8 +49,9 @@ static uint32_t monotonic_ms(void)
  * Bridge the legacy button-only InputEvent to the new UiEvent. Left maps
  * to BACK rather than NAV_LEFT -- see ui/preview.h controls doc. This is
  * the single translation point ui/core/ui_event.h's header comment refers
- * to; the future evdev touch driver will produce UiEvent directly and
- * won't need this bridge at all.
+ * to. The evdev touch driver (ui/core/touch_input.c) does NOT go through
+ * this bridge -- it produces UiEvent{UI_EVENT_TAP, x, y} directly, exactly
+ * as that same header comment anticipated.
  */
 static UiEvent translate_input(InputEvent ev)
 {
@@ -70,7 +71,7 @@ static UiEvent translate_input(InputEvent ev)
 
 gm_status_t ui_preview_run(void)
 {
-    gm_status_t ds = display_open(PREVIEW_SPI_DEVICE, PREVIEW_DC_GPIO, PREVIEW_RST_GPIO);
+    gm_status_t ds = display_open(PREVIEW_FB_DEVICE);
     if (ds != GM_OK) {
         log_error("ui_preview: display_open failed");
         return GM_ERR_IO;
@@ -82,6 +83,14 @@ gm_status_t ui_preview_run(void)
         display_close();
         return GM_ERR_IO;
     }
+
+    /* Touch is optional -- preview still runs button-only if no
+     * capacitive touch device is found (e.g. testing on a panel that
+     * isn't connected yet, or before the evdev node is enumerated). */
+    gm_status_t ts = touch_input_open();
+    bool touch_available = (ts == GM_OK);
+    if (!touch_available)
+        log_warn("ui_preview: no touch device found -- running button-only");
 
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
@@ -111,22 +120,33 @@ gm_status_t ui_preview_run(void)
 
     ui_stack_push(&stack, sleep_screen_as_ui_screen(&sleep_ctx));
 
-    log_info("ui_preview: running (Up/Down move, Center activate, Left back, Ctrl+C exit)");
+    log_info("ui_preview: running (Up/Down move, Center activate, Left back, "
+             "tap%s supported, Ctrl+C exit)",
+             touch_available ? "" : " NOT");
 
     while (g_running) {
         InputEvent legacy_ev = gpio_button_poll();
-        UiEvent    ev        = translate_input(legacy_ev);
+        UiEvent    btn_ev    = translate_input(legacy_ev);
 
-        if (ev.type != UI_EVENT_NONE)
-            ui_stack_dispatch_event(&stack, ev);
+        if (btn_ev.type != UI_EVENT_NONE)
+            ui_stack_dispatch_event(&stack, btn_ev);
+
+        if (touch_available) {
+            UiEvent tap_ev;
+            if (touch_input_poll(&tap_ev))
+                ui_stack_dispatch_event(&stack, tap_ev);
+        }
 
         ui_stack_tick(&stack, monotonic_ms());
         ui_stack_render(&stack);
+        display_present();
 
         usleep(PREVIEW_INTERVAL_MS * 1000u);
     }
 
     log_info("ui_preview: shutting down");
+    if (touch_available)
+        touch_input_close();
     gpio_button_close();
     display_close();
     return GM_OK;

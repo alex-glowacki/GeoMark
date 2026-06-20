@@ -1,11 +1,20 @@
 /**
  * @file display.c
- * @brief ST7796S SPI display driver via Linux spidev.
+ * @brief Framebuffer display driver for the Hosyond 7" IPS DSI panel.
  *
- * GPIO via kernel character device API (/dev/gpiochip0,
- * GPIO_V2_GET_LINE_IOCTL). Required on kernel 6.x — sysfs GPIO deprecated.
+ * All draw_* calls write only into the off-screen backbuffer (s_backbuf).
+ * Nothing reaches the physical panel until display_present() does one
+ * memcpy into the mmap'd /dev/fb0 region -- the panel never displays a
+ * partially-drawn frame, which is what produced the old SPI driver's
+ * visible flicker (every display_fill_rect()/draw_char() call there was
+ * its own slow, independently-visible SPI transaction).
  *
- * MADCTL 0x28 (MV|MY) confirmed on hardware for full-screen landscape fill.
+ * Pixel format is read from the kernel at display_open() time rather than
+ * assumed, since the spec sheet and the kernel's actual reported mode can
+ * differ (e.g. RGB888 panel interface vs. a 16bpp or 32bpp in-memory
+ * framebuffer format) -- this is the runtime equivalent of this project's
+ * "diagnose against real hardware" rule, applied here because the panel
+ * had not arrived yet when this file was written.
  */
 
 #define _GNU_SOURCE
@@ -17,225 +26,75 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <sys/ioctl.h>
-#include <linux/gpio.h>
-#include <linux/spi/spidev.h>
+#include <sys/mman.h>
+#include <linux/fb.h>
 
 #include "ui/tft/display.h"
 #include "util/log.h"
 
 /* -------------------------------------------------------------------------
- * ST7796S command bytes
- * ---------------------------------------------------------------------- */
-
-#define ST7796_SLPOUT   0x11
-#define ST7796_NORON    0x13
-#define ST7796_DISPON   0x29
-#define ST7796_CASET    0x2A
-#define ST7796_RASET    0x2B
-#define ST7796_RAMWR    0x2C
-#define ST7796_MADCTL   0x36
-#define ST7796_COLMOD   0x3A
-#define ST7796_B4H      0xB4
-#define ST7796_B6H      0xB6
-#define ST7796_C1H      0xC1
-#define ST7796_C2H      0xC2
-#define ST7796_C5H      0xC5
-#define ST7796_E0H      0xE0
-#define ST7796_E1H      0xE1
-#define ST7796_E8H      0xE8
-#define ST7796_F0H      0xF0
-
-/*
- * MADCTL 0x28 = MV|MY — confirmed on hardware (Hosyond MSP4022).
- * MV=1: row/col exchange (landscape), MY=1: Y-mirror.
- * 0x48 (MV|MX) fills only right 2/3 of screen on this module.
- */
-#define ST7796_MADCTL_LANDSCAPE 0x28
-
-/* COLMOD 0x55 = RGB565 */
-#define ST7796_COLMOD_16BIT 0x55
-
-/* SPI clock: 40 MHz */
-#define TFT_SPI_HZ 40000000u
-
-/* gpiochip device */
-#define TFT_GPIOCHIP "/dev/gpiochip0"
-
-/* -------------------------------------------------------------------------
  * Module state
  * ---------------------------------------------------------------------- */
 
-static int s_spi_fd   = -1;
-static int s_gpio_fd  = -1;  /* /dev/gpiochip0 chip fd */
-static int s_dc_fd    = -1;  /* line request fd — DC/RS */
-static int s_rst_fd   = -1;  /* line request fd — RESET */
+static int       s_fb_fd        = -1;
+static uint8_t  *s_fb_mem       = NULL;  /* mmap'd /dev/fb0                */
+static size_t    s_fb_mmap_len  = 0;
+static uint16_t *s_backbuf      = NULL;  /* RGB565, TFT_WIDTH * TFT_HEIGHT */
+
+static struct fb_var_screeninfo s_vinfo;
+static struct fb_fix_screeninfo s_finfo;
 
 /* -------------------------------------------------------------------------
- * GPIO character device helpers
+ * Backbuffer pixel access
  * ---------------------------------------------------------------------- */
 
-static int gpio_request_output(int chip_fd, unsigned int line, int initial)
+static inline void backbuf_set(uint16_t x, uint16_t y, uint16_t color)
 {
-    struct gpio_v2_line_request req;
-    memset(&req, 0, sizeof(req));
+    s_backbuf[(uint32_t)y * TFT_WIDTH + x] = color;
+}
 
-    req.offsets[0] = line;
-    req.num_lines  = 1;
-    snprintf(req.consumer, sizeof(req.consumer), "geomark-display");
+/* -------------------------------------------------------------------------
+ * RGB565 -> native framebuffer format conversion
+ * ---------------------------------------------------------------------- */
 
-    req.config.flags     = GPIO_V2_LINE_FLAG_OUTPUT;
-    req.config.num_attrs = 1;
-    req.config.attrs[0].attr.id     = GPIO_V2_LINE_ATTR_ID_OUTPUT_VALUES;
-    req.config.attrs[0].attr.values = (uint64_t)initial;
-    req.config.attrs[0].mask        = 1ULL;
+static inline uint8_t rgb565_r8(uint16_t c) { return (uint8_t)(((c >> 11) & 0x1F) * 255 / 31); }
+static inline uint8_t rgb565_g8(uint16_t c) { return (uint8_t)(((c >> 5)  & 0x3F) * 255 / 63); }
+static inline uint8_t rgb565_b8(uint16_t c) { return (uint8_t)((c        & 0x1F) * 255 / 31); }
 
-    if (ioctl(chip_fd, GPIO_V2_GET_LINE_IOCTL, &req) < 0) {
-        log_error("display: gpio request line %u: %s", line, strerror(errno));
-        return -1;
+/**
+ * @brief Write one backbuffer pixel into the mmap'd framebuffer at byte
+ *        offset `off`, converting from RGB565 to whatever format
+ *        s_vinfo reported (16bpp RGB565 passthrough, or 24/32bpp
+ *        RGB888/XRGB8888 expansion).
+ */
+static inline void fb_write_pixel(uint8_t *dst, uint16_t color)
+{
+    switch (s_vinfo.bits_per_pixel) {
+    case 16:
+        /* Assume the common RGB565 16bpp layout -- matches our own type. */
+        dst[0] = (uint8_t)(color & 0xFF);
+        dst[1] = (uint8_t)(color >> 8);
+        break;
+
+    case 24:
+        /* RGB888, byte order per offsets reported by the kernel. */
+        dst[s_vinfo.red.offset   / 8] = rgb565_r8(color);
+        dst[s_vinfo.green.offset / 8] = rgb565_g8(color);
+        dst[s_vinfo.blue.offset  / 8] = rgb565_b8(color);
+        break;
+
+    case 32:
+    default:
+        /* XRGB8888 / ARGB8888 -- pad/alpha byte left untouched (0). */
+        dst[s_vinfo.red.offset   / 8] = rgb565_r8(color);
+        dst[s_vinfo.green.offset / 8] = rgb565_g8(color);
+        dst[s_vinfo.blue.offset  / 8] = rgb565_b8(color);
+        break;
     }
-    return req.fd;
-}
-
-static void gpio_set(int line_fd, int value)
-{
-    struct gpio_v2_line_values vals;
-    memset(&vals, 0, sizeof(vals));
-    vals.mask = 1ULL;
-    vals.bits = (uint64_t)(value ? 1 : 0);
-    if (ioctl(line_fd, GPIO_V2_LINE_SET_VALUES_IOCTL, &vals) < 0)
-        log_error("display: gpio_set: %s", strerror(errno));
 }
 
 /* -------------------------------------------------------------------------
- * Low-level SPI helpers
- * ---------------------------------------------------------------------- */
-
-static void tft_write_cmd(uint8_t cmd)
-{
-    gpio_set(s_dc_fd, 0);
-    struct spi_ioc_transfer tr = {
-        .tx_buf        = (unsigned long)&cmd,
-        .rx_buf        = 0,
-        .len           = 1,
-        .speed_hz      = TFT_SPI_HZ,
-        .bits_per_word = 8,
-        .delay_usecs   = 0,
-    };
-    if (ioctl(s_spi_fd, SPI_IOC_MESSAGE(1), &tr) < 0)
-        log_error("display: SPI cmd 0x%02X: %s", cmd, strerror(errno));
-}
-
-static void tft_write_data(uint8_t data)
-{
-    gpio_set(s_dc_fd, 1);
-    struct spi_ioc_transfer tr = {
-        .tx_buf        = (unsigned long)&data,
-        .rx_buf        = 0,
-        .len           = 1,
-        .speed_hz      = TFT_SPI_HZ,
-        .bits_per_word = 8,
-        .delay_usecs   = 0,
-    };
-    if (ioctl(s_spi_fd, SPI_IOC_MESSAGE(1), &tr) < 0)
-        log_error("display: SPI data 0x%02X: %s", data, strerror(errno));
-}
-
-static void tft_write_buf(const uint8_t *buf, size_t len)
-{
-    gpio_set(s_dc_fd, 1);
-    struct spi_ioc_transfer tr = {
-        .tx_buf        = (unsigned long)buf,
-        .rx_buf        = 0,
-        .len           = (uint32_t)len,
-        .speed_hz      = TFT_SPI_HZ,
-        .bits_per_word = 8,
-        .delay_usecs   = 0,
-    };
-    if (ioctl(s_spi_fd, SPI_IOC_MESSAGE(1), &tr) < 0)
-        log_error("display: SPI buf write: %s", strerror(errno));
-}
-
-/* -------------------------------------------------------------------------
- * Address window
- * ---------------------------------------------------------------------- */
-
-static void tft_set_window(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1)
-{
-    tft_write_cmd(ST7796_CASET);
-    uint8_t ca[4] = {
-        (uint8_t)(x0 >> 8), (uint8_t)(x0 & 0xFF),
-        (uint8_t)(x1 >> 8), (uint8_t)(x1 & 0xFF),
-    };
-    tft_write_buf(ca, 4);
-
-    tft_write_cmd(ST7796_RASET);
-    uint8_t ra[4] = {
-        (uint8_t)(y0 >> 8), (uint8_t)(y0 & 0xFF),
-        (uint8_t)(y1 >> 8), (uint8_t)(y1 & 0xFF),
-    };
-    tft_write_buf(ra, 4);
-
-    tft_write_cmd(ST7796_RAMWR);
-}
-
-/* -------------------------------------------------------------------------
- * ST7796S init sequence
- * ---------------------------------------------------------------------- */
-
-static void tft_hw_reset(void)
-{
-    gpio_set(s_rst_fd, 1); usleep(10000);
-    gpio_set(s_rst_fd, 0); usleep(10000);
-    gpio_set(s_rst_fd, 1); usleep(120000);
-}
-
-static void tft_init_sequence(void)
-{
-    tft_write_cmd(ST7796_SLPOUT); usleep(120000);
-
-    tft_write_cmd(ST7796_F0H); tft_write_data(0xC3);
-    tft_write_cmd(ST7796_F0H); tft_write_data(0x96);
-
-    tft_write_cmd(ST7796_MADCTL); tft_write_data(ST7796_MADCTL_LANDSCAPE);
-    tft_write_cmd(ST7796_COLMOD); tft_write_data(ST7796_COLMOD_16BIT);
-
-    tft_write_cmd(ST7796_B4H); tft_write_data(0x01);
-
-    tft_write_cmd(ST7796_B6H);
-    tft_write_data(0x80); tft_write_data(0x02); tft_write_data(0x3B);
-
-    tft_write_cmd(ST7796_E8H);
-    tft_write_data(0x40); tft_write_data(0x8A); tft_write_data(0x00);
-    tft_write_data(0x00); tft_write_data(0x29); tft_write_data(0x19);
-    tft_write_data(0xA5); tft_write_data(0x33);
-
-    tft_write_cmd(ST7796_C1H); tft_write_data(0x06);
-    tft_write_cmd(ST7796_C2H); tft_write_data(0xA7);
-    tft_write_cmd(ST7796_C5H); tft_write_data(0x18);
-
-    tft_write_cmd(ST7796_E0H);
-    tft_write_data(0x0F); tft_write_data(0x09); tft_write_data(0x0B);
-    tft_write_data(0x06); tft_write_data(0x04); tft_write_data(0x15);
-    tft_write_data(0x2F); tft_write_data(0x54); tft_write_data(0x42);
-    tft_write_data(0x3C); tft_write_data(0x17); tft_write_data(0x14);
-    tft_write_data(0x18); tft_write_data(0x1B); tft_write_data(0x00);
-
-    tft_write_cmd(ST7796_E1H);
-    tft_write_data(0x0F); tft_write_data(0x09); tft_write_data(0x0B);
-    tft_write_data(0x06); tft_write_data(0x04); tft_write_data(0x03);
-    tft_write_data(0x2D); tft_write_data(0x43); tft_write_data(0x42);
-    tft_write_data(0x3B); tft_write_data(0x16); tft_write_data(0x14);
-    tft_write_data(0x17); tft_write_data(0x1B); tft_write_data(0x00);
-
-    tft_write_cmd(ST7796_F0H); tft_write_data(0xC3);
-    tft_write_cmd(ST7796_F0H); tft_write_data(0x96);
-
-    tft_write_cmd(ST7796_NORON);  usleep(10000);
-    tft_write_cmd(ST7796_DISPON); usleep(20000);
-}
-
-/* -------------------------------------------------------------------------
- * Built-in 5x7 bitmap font (ASCII 0x20–0x7E)
+ * Built-in 5x7 bitmap font (ASCII 0x20-0x7E)
  * ---------------------------------------------------------------------- */
 
 static const uint8_t s_font5x7[][5] = {
@@ -340,149 +199,99 @@ static const uint8_t s_font5x7[][5] = {
  * Public API
  * ---------------------------------------------------------------------- */
 
-gm_status_t display_open(const char *spi_device, int dc_gpio, int rst_gpio)
+gm_status_t display_open(const char *fb_device)
 {
-    /* Open gpiochip0 */
-    s_gpio_fd = open(TFT_GPIOCHIP, O_RDONLY);
-    if (s_gpio_fd < 0) {
-        log_error("display: open %s: %s", TFT_GPIOCHIP, strerror(errno));
+    s_fb_fd = open(fb_device, O_RDWR);
+    if (s_fb_fd < 0) {
+        log_error("display: open %s: %s", fb_device, strerror(errno));
         return GM_ERR_IO;
     }
 
-    /* Request DC and RST as outputs, initially high */
-    s_dc_fd  = gpio_request_output(s_gpio_fd, (unsigned int)dc_gpio,  1);
-    s_rst_fd = gpio_request_output(s_gpio_fd, (unsigned int)rst_gpio, 1);
-    if (s_dc_fd < 0 || s_rst_fd < 0) {
-        log_error("display: failed to acquire GPIO lines");
-        close(s_gpio_fd); s_gpio_fd = -1;
+    if (ioctl(s_fb_fd, FBIOGET_VSCREENINFO, &s_vinfo) < 0) {
+        log_error("display: FBIOGET_VSCREENINFO: %s", strerror(errno));
+        close(s_fb_fd); s_fb_fd = -1;
+        return GM_ERR_IO;
+    }
+    if (ioctl(s_fb_fd, FBIOGET_FSCREENINFO, &s_finfo) < 0) {
+        log_error("display: FBIOGET_FSCREENINFO: %s", strerror(errno));
+        close(s_fb_fd); s_fb_fd = -1;
         return GM_ERR_IO;
     }
 
-    /* Open spidev */
-    s_spi_fd = open(spi_device, O_RDWR);
-    if (s_spi_fd < 0) {
-        log_error("display: open %s: %s", spi_device, strerror(errno));
-        close(s_dc_fd);  s_dc_fd  = -1;
-        close(s_rst_fd); s_rst_fd = -1;
-        close(s_gpio_fd); s_gpio_fd = -1;
+    log_info("display: fb reports %ux%u, %ubpp, line_length=%u",
+             s_vinfo.xres, s_vinfo.yres, s_vinfo.bits_per_pixel,
+             s_finfo.line_length);
+
+    if (s_vinfo.xres < TFT_WIDTH || s_vinfo.yres < TFT_HEIGHT) {
+        log_error("display: fb geometry %ux%u smaller than expected %dx%d",
+                  s_vinfo.xres, s_vinfo.yres, TFT_WIDTH, TFT_HEIGHT);
+        close(s_fb_fd); s_fb_fd = -1;
+        return GM_ERR_IO;
+    }
+    if (s_vinfo.bits_per_pixel != 16 &&
+        s_vinfo.bits_per_pixel != 24 &&
+        s_vinfo.bits_per_pixel != 32) {
+        log_error("display: unsupported fb bpp %u", s_vinfo.bits_per_pixel);
+        close(s_fb_fd); s_fb_fd = -1;
         return GM_ERR_IO;
     }
 
-    uint8_t mode = SPI_MODE_0;
-    if (ioctl(s_spi_fd, SPI_IOC_WR_MODE, &mode) < 0) {
-        log_error("display: SPI_IOC_WR_MODE: %s", strerror(errno));
-        goto err;
-    }
-    uint8_t bits = 8;
-    if (ioctl(s_spi_fd, SPI_IOC_WR_BITS_PER_WORD, &bits) < 0) {
-        log_error("display: SPI_IOC_WR_BITS_PER_WORD: %s", strerror(errno));
-        goto err;
-    }
-    uint32_t speed = TFT_SPI_HZ;
-    if (ioctl(s_spi_fd, SPI_IOC_WR_MAX_SPEED_HZ, &speed) < 0) {
-        log_error("display: SPI_IOC_WR_MAX_SPEED_HZ: %s", strerror(errno));
-        goto err;
+    s_fb_mmap_len = (size_t)s_finfo.line_length * s_vinfo.yres;
+    s_fb_mem = mmap(NULL, s_fb_mmap_len, PROT_READ | PROT_WRITE,
+                    MAP_SHARED, s_fb_fd, 0);
+    if (s_fb_mem == MAP_FAILED) {
+        log_error("display: mmap: %s", strerror(errno));
+        s_fb_mem = NULL;
+        close(s_fb_fd); s_fb_fd = -1;
+        return GM_ERR_IO;
     }
 
-    tft_hw_reset();
-    tft_init_sequence();
+    s_backbuf = malloc((size_t)TFT_WIDTH * TFT_HEIGHT * sizeof(uint16_t));
+    if (!s_backbuf) {
+        log_error("display: backbuffer malloc failed");
+        munmap(s_fb_mem, s_fb_mmap_len); s_fb_mem = NULL;
+        close(s_fb_fd); s_fb_fd = -1;
+        return GM_ERR_NOMEM;
+    }
+
     display_fill(TFT_BLACK);
+    display_present();
 
-    log_info("display: ST7796S ready on %s (DC=%d RST=%d)",
-             spi_device, dc_gpio, rst_gpio);
+    log_info("display: fbdev ready on %s (%dx%d backbuffer)",
+             fb_device, TFT_WIDTH, TFT_HEIGHT);
     return GM_OK;
-
-err:
-    close(s_spi_fd);  s_spi_fd  = -1;
-    close(s_dc_fd);   s_dc_fd   = -1;
-    close(s_rst_fd);  s_rst_fd  = -1;
-    close(s_gpio_fd); s_gpio_fd = -1;
-    return GM_ERR_IO;
 }
 
 void display_fill(uint16_t color)
 {
-    if (s_spi_fd < 0) return;
-
-    tft_set_window(0, 0, TFT_WIDTH - 1, TFT_HEIGHT - 1);
-
-    uint32_t stride = TFT_WIDTH * 2u;
-    uint8_t *line = malloc(stride);
-    if (!line) { log_error("display: fill: malloc failed"); return; }
-
-    uint8_t hi = (uint8_t)(color >> 8);
-    uint8_t lo = (uint8_t)(color & 0xFF);
-    for (uint32_t i = 0; i < stride; i += 2) {
-        line[i]     = hi;
-        line[i + 1] = lo;
-    }
-
-    gpio_set(s_dc_fd, 1);
-    for (uint16_t row = 0; row < TFT_HEIGHT; row++) {
-        struct spi_ioc_transfer tr = {
-            .tx_buf        = (unsigned long)line,
-            .rx_buf        = 0,
-            .len           = stride,
-            .speed_hz      = TFT_SPI_HZ,
-            .bits_per_word = 8,
-            .delay_usecs   = 0,
-        };
-        if (ioctl(s_spi_fd, SPI_IOC_MESSAGE(1), &tr) < 0) {
-            log_error("display: fill row %d: %s", row, strerror(errno));
-            break;
-        }
-    }
-    free(line);
+    if (!s_backbuf) return;
+    for (uint32_t i = 0; i < (uint32_t)TFT_WIDTH * TFT_HEIGHT; i++)
+        s_backbuf[i] = color;
 }
 
 void display_draw_pixel(uint16_t x, uint16_t y, uint16_t color)
 {
-    if (s_spi_fd < 0 || x >= TFT_WIDTH || y >= TFT_HEIGHT) return;
-    tft_set_window(x, y, x, y);
-    uint8_t px[2] = { (uint8_t)(color >> 8), (uint8_t)(color & 0xFF) };
-    tft_write_buf(px, 2);
+    if (!s_backbuf || x >= TFT_WIDTH || y >= TFT_HEIGHT) return;
+    backbuf_set(x, y, color);
 }
 
 void display_fill_rect(uint16_t x, uint16_t y, uint16_t w, uint16_t h,
                        uint16_t color)
 {
-    if (s_spi_fd < 0 || w == 0 || h == 0) return;
+    if (!s_backbuf || w == 0 || h == 0) return;
     if (x >= TFT_WIDTH || y >= TFT_HEIGHT) return;
     if (x + w > TFT_WIDTH)  w = (uint16_t)(TFT_WIDTH  - x);
     if (y + h > TFT_HEIGHT) h = (uint16_t)(TFT_HEIGHT - y);
 
-    tft_set_window(x, y, (uint16_t)(x + w - 1), (uint16_t)(y + h - 1));
-
-    uint32_t stride = (uint32_t)w * 2u;
-    uint8_t *line = malloc(stride);
-    if (!line) return;
-
-    uint8_t hi = (uint8_t)(color >> 8);
-    uint8_t lo = (uint8_t)(color & 0xFF);
-    for (uint32_t i = 0; i < stride; i += 2) {
-        line[i]     = hi;
-        line[i + 1] = lo;
-    }
-
-    gpio_set(s_dc_fd, 1);
-    for (uint16_t row = 0; row < h; row++) {
-        struct spi_ioc_transfer tr = {
-            .tx_buf        = (unsigned long)line,
-            .rx_buf        = 0,
-            .len           = stride,
-            .speed_hz      = TFT_SPI_HZ,
-            .bits_per_word = 8,
-            .delay_usecs   = 0,
-        };
-        ioctl(s_spi_fd, SPI_IOC_MESSAGE(1), &tr);
-    }
-    free(line);
+    for (uint16_t row = 0; row < h; row++)
+        for (uint16_t col = 0; col < w; col++)
+            backbuf_set((uint16_t)(x + col), (uint16_t)(y + row), color);
 }
 
 void display_draw_char(uint16_t x, uint16_t y, char c,
                        uint16_t fg, uint16_t bg, uint8_t scale)
 {
-    if (s_spi_fd < 0 || scale == 0) return;
+    if (!s_backbuf || scale == 0) return;
 
     uint8_t idx = (uint8_t)c;
     if (idx < 0x20 || idx > 0x7E) idx = 0x20;
@@ -512,11 +321,25 @@ void display_draw_string(uint16_t x, uint16_t y, const char *s,
     }
 }
 
+void display_present(void)
+{
+    if (!s_backbuf || !s_fb_mem) return;
+
+    uint32_t bytes_per_px = s_vinfo.bits_per_pixel / 8;
+
+    for (uint16_t y = 0; y < TFT_HEIGHT; y++) {
+        uint8_t *dst_row = s_fb_mem + (size_t)y * s_finfo.line_length;
+        for (uint16_t x = 0; x < TFT_WIDTH; x++) {
+            uint16_t color = s_backbuf[(uint32_t)y * TFT_WIDTH + x];
+            fb_write_pixel(dst_row + (size_t)x * bytes_per_px, color);
+        }
+    }
+}
+
 void display_close(void)
 {
-    if (s_spi_fd  >= 0) { close(s_spi_fd);  s_spi_fd  = -1; }
-    if (s_rst_fd  >= 0) { close(s_rst_fd);  s_rst_fd  = -1; }
-    if (s_dc_fd   >= 0) { close(s_dc_fd);   s_dc_fd   = -1; }
-    if (s_gpio_fd >= 0) { close(s_gpio_fd); s_gpio_fd = -1; }
+    if (s_backbuf) { free(s_backbuf); s_backbuf = NULL; }
+    if (s_fb_mem)  { munmap(s_fb_mem, s_fb_mmap_len); s_fb_mem = NULL; }
+    if (s_fb_fd >= 0) { close(s_fb_fd); s_fb_fd = -1; }
     log_info("display: closed");
 }
