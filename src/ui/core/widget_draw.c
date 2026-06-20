@@ -42,9 +42,8 @@ static void draw_centered_text(uint16_t x, uint16_t y, uint16_t w, uint16_t h,
     display_draw_string(tx, ty, s, fg, bg, scale);
 }
 
-static void render_widget(const UiWidget *w)
+static void render_widget(const UiWidget *w, const UiRect *r)
 {
-    const UiRect *r = &w->rect;
     char buf[64];
 
     switch (w->kind) {
@@ -92,8 +91,47 @@ static void render_widget(const UiWidget *w)
         draw_focus_border(r->x, r->y, r->w, r->h);
 }
 
+/**
+ * True if a widget at signed effective top eff_top (height h) has any
+ * vertical overlap with region at all -- used to skip drawing scrollable
+ * widgets that have scrolled completely out of view. Deliberately
+ * permissive (any overlap counts as "draw it") rather than requiring
+ * full containment: a widget straddling the region's top or bottom edge
+ * should still draw its visible portion. display.c has no pixel-level
+ * clip rect, so a straddling widget will draw slightly past the
+ * region's edge -- acceptable for a first pass (the keyboard's own
+ * background fill below the region naturally covers any such overdraw
+ * from a widget straddling the bottom edge; nothing currently sits
+ * immediately above scroll_region's top edge for the same reason to
+ * matter there). True pixel clipping is a possible future display.c
+ * addition if a screen's layout ever needs it.
+ *
+ * Takes the signed effective top directly rather than a UiRect, since
+ * UiRect.y is uint16_t and cannot represent a widget scrolled above
+ * y=0 -- see ui_widget_effective_rect()'s doc comment in widget.c.
+ */
+static bool overlaps_region(int32_t eff_top, int32_t h, const UiRect *region)
+{
+    int32_t eff_bottom = eff_top + h;
+    int32_t reg_top    = (int32_t)region->y;
+    int32_t reg_bottom  = (int32_t)region->y + (int32_t)region->h;
+    return eff_bottom > reg_top && eff_top < reg_bottom;
+}
+
 void ui_grid_render(const UiWidgetGrid *grid)
 {
-    for (uint32_t i = 0; i < grid->count; i++)
-        render_widget(&grid->widgets[i]);
+    bool scrolling = grid->scroll_region.w > 0 && grid->scroll_region.h > 0;
+
+    for (uint32_t i = 0; i < grid->count; i++) {
+        const UiWidget *w = &grid->widgets[i];
+
+        if (scrolling && w->scrollable) {
+            int32_t eff_top = (int32_t)w->rect.y - grid->scroll_y;
+            if (!overlaps_region(eff_top, (int32_t)w->rect.h, &grid->scroll_region))
+                continue;
+        }
+
+        UiRect eff = ui_widget_effective_rect(w, grid);
+        render_widget(w, &eff);
+    }
 }

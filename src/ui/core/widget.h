@@ -15,7 +15,13 @@
  *     consistent with the rest of GeoMark (gm_point_store_t, SurveySession,
  *     etc. are all fixed-size). Raised from 24 to 50 to make room for a
  *     full on-screen QWERTY keyboard (41 keys, see ui/core/keyboard.h)
- *     sharing a grid with a screen's own form widgets.
+ *     sharing a grid with a screen's own form widgets, then from 50 to 80
+ *     when Job Create's Properties form (20 widgets: label+field/dropdown
+ *     pairs across 9 rows plus a Properties heading and a Create button)
+ *     plus the keyboard (41) totaled 61, exceeding 50. sizeof(UiWidget) is
+ *     88 bytes as of this writing, so 80 widgets costs ~6.9KB per grid --
+ *     trivial on a Pi 5, and this is one grid per active screen, not
+ *     per-frame.
  *   - This file + widget.c have zero dependency on ui/tft/display.h, so the
  *     logic is unit-testable on host with no SPI/GPIO/framebuffer present.
  *     Rendering lives in widget_draw.c, the only piece that touches
@@ -25,6 +31,11 @@
  *     against widget rects, relocates focus to the tapped widget, then
  *     fires the exact same activation path UI_EVENT_ACTIVATE would. See
  *     ui_grid_handle_event() in widget.c.
+ *   - D-pad-driven scroll (added for Job Setup's 8-field Properties
+ *     section, which doesn't fit on screen at once above an
+ *     always-visible keyboard): see UiWidgetGrid::scroll_region's doc
+ *     comment. Touch drag-to-scroll is a deliberate, documented gap --
+ *     not yet built, see that same comment for why.
  *
  * Ownership: label strings, dropdown options, numeric unit_suffix, and
  * text-field buf are all caller-owned and must outlive the widget — the
@@ -73,6 +84,17 @@ typedef struct UiWidget {
     bool focused; /* maintained by the grid — do not set directly */
 
     /**
+     * True if this widget scrolls with the grid's scroll region (see
+     * UiWidgetGrid::scroll_y below); false for fixed chrome that always
+     * renders at its literal rect regardless of scroll position (e.g.
+     * keyboard keys, a screen title). Set via ui_widget_mark_scrollable()
+     * after adding the widget, not directly -- default false
+     * (grid_alloc()'s zero-init leaves every new widget non-scrollable
+     * until marked).
+     */
+    bool scrollable;
+
+    /**
      * Fired on UI_EVENT_ACTIVATE (Center / resolved tap), after any
      * kind-specific default behavior in ui_grid_handle_event() has already
      * been applied (numeric step, dropdown cycle, text-field edit toggle).
@@ -110,13 +132,40 @@ typedef struct UiWidget {
  * Widget grid — one screen's worth of focusable widgets
  * -------------------------------------------------------------------------- */
 
-#define UI_GRID_MAX_WIDGETS 50
+#define UI_GRID_MAX_WIDGETS 80
 
 typedef struct {
     UiWidget widgets[UI_GRID_MAX_WIDGETS];
     uint32_t count;
     int32_t focus_idx; /* -1 == nothing focused                          */
     void *screen_ctx;  /* opaque; passed to every on_activate callback   */
+
+    /**
+     * D-pad-driven vertical scrolling for forms with more scrollable
+     * widgets than fit in scroll_region's height at once (e.g. Job Setup's
+     * 8 Properties fields above an always-visible keyboard). Touch
+     * drag-to-scroll is a known, deliberate gap -- not yet built, since it
+     * needs new gesture-tracking in ui/core/touch_input.c (currently
+     * tap-only, discarding in-progress contact position by design) that
+     * risks destabilizing Session 20's hardware-verified touch edge-
+     * detection fix. D-pad is the only scroll trigger today; revisit touch
+     * drag as its own, separately-tested piece of work.
+     *
+     * scroll_y is in pixels, 0 = scrolled to the top. Only widgets with
+     * scrollable == true are affected: their rendered position is
+     * rect.y - scroll_y, and they're skipped entirely by ui_grid_render()
+     * if that shifted position falls fully outside scroll_region. Fixed
+     * chrome (scrollable == false) always renders at its literal rect.
+     *
+     * scroll_region with all-zero fields (the ui_grid_init() default)
+     * means "no scrolling" -- ui_grid_move_focus() and ui_grid_render()
+     * both treat a zero-area scroll_region as "scrolling disabled" and
+     * behave exactly as before this field was added, so existing screens
+     * (Main Menu, Sleep, New Project) are unaffected without any change
+     * on their part.
+     */
+    UiRect scroll_region;
+    int32_t scroll_y;
 } UiWidgetGrid;
 
 /* --------------------------------------------------------------------------
@@ -141,6 +190,42 @@ UiWidget *ui_grid_add_dropdown(UiWidgetGrid *grid, UiRect rect, const char *labe
                                const char *const *options, uint32_t option_count,
                                uint32_t initial_selected);
 
+/**
+ * The rect a widget actually renders/hit-tests at: its literal rect,
+ * shifted up by grid->scroll_y if the widget is scrollable (see
+ * UiWidgetGrid::scroll_region's doc comment), unchanged otherwise. Used
+ * internally by ui_grid_hit_test() and ui_grid_render(); exposed publicly
+ * since both widget.c and widget_draw.c need it and it has no display.h
+ * dependency of its own, so it's no different from ui_widget_rect_contains()
+ * in that respect.
+ */
+UiRect ui_widget_effective_rect(const UiWidget *w, const UiWidgetGrid *grid);
+
+/**
+ * Mark an already-added widget as belonging to the grid's scroll region
+ * (see UiWidgetGrid::scroll_region's doc comment) -- call right after the
+ * matching ui_grid_add_*() call, e.g.:
+ *     ui_widget_mark_scrollable(ui_grid_add_text_field(&grid, r, "Job Name", buf, cap));
+ * One function rather than a _scrollable variant of every ui_grid_add_*()
+ * call, so the existing five constructors stay untouched and every
+ * existing caller is unaffected. Safe to call with NULL (e.g. if the
+ * matching ui_grid_add_*() call failed because the grid was full) -- a
+ * no-op in that case, same null-tolerance ui_grid_add_*() itself has at
+ * call sites that check for a NULL return.
+ */
+void ui_widget_mark_scrollable(UiWidget *w);
+
+/**
+ * Define the grid's scrollable viewport in screen pixels. Only widgets
+ * marked scrollable (see ui_widget_mark_scrollable()) are affected by
+ * scroll_y or clipped against this region; everything else (fixed
+ * chrome) renders at its literal rect regardless. Pass an all-zero UiRect
+ * (the ui_grid_init() default) to disable scrolling entirely -- this is
+ * the default, so grids that never call this function behave exactly as
+ * before scroll support was added.
+ */
+void ui_grid_set_scroll_region(UiWidgetGrid *grid, UiRect region);
+
 /* --------------------------------------------------------------------------
  * Focus / hit-testing / input
  * -------------------------------------------------------------------------- */
@@ -155,10 +240,26 @@ bool ui_grid_focus_first(UiWidgetGrid *grid);
  * Returns false if there is no focusable widget that way (an edge) — the
  * caller (the owning screen) decides what an edge means, e.g. translating
  * a NAV_LEFT-at-edge into a UI_EVENT_BACK dispatched to the screen stack.
+ *
+ * Scoring uses each widget's literal (unscrolled) rect, so focus order
+ * never changes just because the view has scrolled -- only which widgets
+ * are currently visible changes. If scrolling is enabled (scroll_region
+ * has non-zero area) and moving focus would land on a scrollable widget
+ * outside the visible region, ui_grid_move_focus() advances scroll_y by
+ * one widget-row's worth so the newly-focused widget becomes visible,
+ * rather than leaving focus on an off-screen widget the person can't see.
  */
 bool ui_grid_move_focus(UiWidgetGrid *grid, UiEventType dir);
 
-/** Index of the focusable widget at (x, y), or -1 if none. */
+/**
+ * Index of the focusable widget at (x, y), or -1 if none.
+ *
+ * Hit-tests against each widget's effective (scrolled) on-screen
+ * position -- scrollable widgets are tested at rect.y - grid->scroll_y,
+ * exactly where they're actually drawn, not their literal stored rect.
+ * A tap therefore always hits whatever is visually under it, scrolled or
+ * not.
+ */
 int32_t ui_grid_hit_test(const UiWidgetGrid *grid, uint16_t x, uint16_t y);
 
 /**

@@ -107,10 +107,57 @@ UiWidget *ui_grid_add_dropdown(UiWidgetGrid *grid, UiRect rect, const char *labe
     return w;
 }
 
+void ui_widget_mark_scrollable(UiWidget *w)
+{
+    if (!w) return;
+    w->scrollable = true;
+}
+
+static bool scroll_region_active(const UiWidgetGrid *grid)
+{
+    return grid->scroll_region.w > 0 && grid->scroll_region.h > 0;
+}
+
+void ui_grid_set_scroll_region(UiWidgetGrid *grid, UiRect region)
+{
+    grid->scroll_region = region;
+    grid->scroll_y       = 0;
+}
+
 bool ui_widget_rect_contains(const UiRect *r, uint16_t x, uint16_t y)
 {
     return x >= r->x && x < (uint16_t)(r->x + r->w) &&
            y >= r->y && y < (uint16_t)(r->y + r->h);
+}
+
+static int32_t rect_center_x(const UiRect *r) { return (int32_t)r->x + (int32_t)r->w / 2; }
+static int32_t rect_center_y(const UiRect *r) { return (int32_t)r->y + (int32_t)r->h / 2; }
+
+/**
+ * The rect a widget actually renders/hit-tests at when its effective
+ * (scrolled) position is on-screen, i.e. effective y >= 0.
+ *
+ * UiRect.y is uint16_t, so this function cannot represent a widget
+ * scrolled above y=0 (a negative effective position) without either
+ * wrapping (corrupting the value) or saturating (which would make a
+ * far-off-screen widget look identical to one sitting exactly at the
+ * region's top edge to any caller that only looks at this return value).
+ * Every caller that needs a correct in/out-of-view decision -- hit
+ * testing, render-skip, and the auto-scroll-into-view logic in
+ * ui_grid_move_focus() -- therefore computes the signed effective
+ * top/bottom itself from rect.y and scroll_y directly, and only calls
+ * this function once it already knows the result will be non-negative
+ * (e.g. ui_grid_render() checks overlap in signed space first, then
+ * calls this only for widgets it has already decided to draw).
+ */
+UiRect ui_widget_effective_rect(const UiWidget *w, const UiWidgetGrid *grid)
+{
+    UiRect r = w->rect;
+    if (w->scrollable) {
+        int32_t shifted = (int32_t)r.y - grid->scroll_y;
+        r.y = (shifted < 0) ? 0 : (uint16_t)shifted;
+    }
+    return r;
 }
 
 bool ui_grid_focus_first(UiWidgetGrid *grid)
@@ -121,15 +168,13 @@ bool ui_grid_focus_first(UiWidgetGrid *grid)
                 grid->widgets[grid->focus_idx].focused = false;
             grid->focus_idx = (int32_t)i;
             grid->widgets[i].focused = true;
+            grid->scroll_y = 0;
             return true;
         }
     }
     grid->focus_idx = -1;
     return false;
 }
-
-static int32_t rect_center_x(const UiRect *r) { return (int32_t)r->x + (int32_t)r->w / 2; }
-static int32_t rect_center_y(const UiRect *r) { return (int32_t)r->y + (int32_t)r->h / 2; }
 
 bool ui_grid_move_focus(UiWidgetGrid *grid, UiEventType dir)
 {
@@ -176,14 +221,56 @@ bool ui_grid_move_focus(UiWidgetGrid *grid, UiEventType dir)
     grid->widgets[grid->focus_idx].focused = false;
     grid->focus_idx = best_idx;
     grid->widgets[best_idx].focused = true;
+
+    /* If scrolling is enabled and the newly-focused widget is a
+     * scrollable one currently outside the visible region, scroll just
+     * enough to bring it fully into view -- never leave focus on
+     * something the person can't see. Non-scrollable widgets (fixed
+     * chrome) are never affected.
+     *
+     * Computed directly in signed arithmetic rather than by reading
+     * ui_widget_effective_rect()'s UiRect back out: UiRect.y is
+     * uint16_t, which cannot represent a widget that has scrolled above
+     * the viewport (a legitimately negative effective Y) -- casting a
+     * negative value into it wraps around to a huge positive number
+     * instead (e.g. -16 -> 65520), corrupting every comparison and the
+     * scroll_y accumulator itself. The fix is to never let a negative
+     * effective Y round-trip through a uint16_t at all: do the
+     * comparison here in plain int32_t, using the widget's literal
+     * (always non-negative, since UiRect.y is unsigned) rect.y directly. */
+    if (scroll_region_active(grid)) {
+        const UiWidget *focused = &grid->widgets[best_idx];
+        if (focused->scrollable) {
+            int32_t eff_top    = (int32_t)focused->rect.y - grid->scroll_y;
+            int32_t eff_bottom = eff_top + (int32_t)focused->rect.h;
+            const UiRect *region = &grid->scroll_region;
+
+            if (eff_top < (int32_t)region->y) {
+                grid->scroll_y -= (int32_t)region->y - eff_top;
+            } else if (eff_bottom > (int32_t)(region->y + region->h)) {
+                grid->scroll_y += eff_bottom - (int32_t)(region->y + region->h);
+            }
+            if (grid->scroll_y < 0)
+                grid->scroll_y = 0;
+        }
+    }
+
     return true;
 }
 
 int32_t ui_grid_hit_test(const UiWidgetGrid *grid, uint16_t x, uint16_t y)
 {
     for (uint32_t i = 0; i < grid->count; i++) {
-        if (!grid->widgets[i].focusable) continue;
-        if (ui_widget_rect_contains(&grid->widgets[i].rect, x, y))
+        const UiWidget *w = &grid->widgets[i];
+        if (!w->focusable) continue;
+
+        int32_t eff_top = w->scrollable ? (int32_t)w->rect.y - grid->scroll_y
+                                        : (int32_t)w->rect.y;
+        if (eff_top < 0) continue; /* scrolled above the screen -- can't be tapped */
+
+        UiRect eff = w->rect;
+        eff.y = (uint16_t)eff_top;
+        if (ui_widget_rect_contains(&eff, x, y))
             return (int32_t)i;
     }
     return -1;
