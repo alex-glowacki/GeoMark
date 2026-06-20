@@ -17,6 +17,8 @@
 #include "ui/core/touch_input.h"
 #include "ui/gpio_button.h"
 #include "ui/input.h"
+#include "ui/screens/job_create_screen.h"
+#include "ui/screens/job_setup_screen.h"
 #include "ui/screens/main_menu_screen.h"
 #include "ui/screens/new_project_screen.h"
 #include "ui/screens/placeholder_screen.h"
@@ -100,16 +102,27 @@ gm_status_t ui_preview_run(void)
     UiScreenStack stack;
     ui_stack_init(&stack);
 
-    PlaceholderScreenCtx job_setup_stub;
+    PlaceholderScreenCtx open_job_stub;
+    PlaceholderScreenCtx measure_points_stub;
     PlaceholderScreenCtx continue_stub;
     PlaceholderScreenCtx stats_stub;
-    placeholder_screen_init(&job_setup_stub, "Job Setup -- not built yet");
-    placeholder_screen_init(&continue_stub,  "Continue Project -- not built yet");
-    placeholder_screen_init(&stats_stub,     "Stats -- not built yet");
+    placeholder_screen_init(&open_job_stub,       "Open Existing Job -- not built yet");
+    placeholder_screen_init(&measure_points_stub, "Measure Points -- not built yet");
+    placeholder_screen_init(&continue_stub,       "Continue Project -- not built yet");
+    placeholder_screen_init(&stats_stub,          "Stats -- not built yet");
+
+    JobCreateScreenCtx job_create_ctx;
+    job_create_screen_init(&job_create_ctx, &stack,
+                           placeholder_screen_as_ui_screen(&measure_points_stub));
+
+    JobSetupScreenCtx job_setup_ctx;
+    job_setup_screen_init(&job_setup_ctx, &stack,
+                          job_create_screen_as_ui_screen(&job_create_ctx),
+                          placeholder_screen_as_ui_screen(&open_job_stub));
 
     NewProjectScreenCtx new_project_ctx;
     new_project_screen_init(&new_project_ctx, &stack,
-                            placeholder_screen_as_ui_screen(&job_setup_stub));
+                            job_setup_screen_as_ui_screen(&job_setup_ctx));
 
     MainMenuScreenCtx menu_ctx;
     main_menu_screen_init(&menu_ctx, &stack,
