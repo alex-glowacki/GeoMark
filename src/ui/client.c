@@ -46,8 +46,6 @@
  * Hardware config — Pi 5, Hosyond 7" DSI panel via framebuffer
  * -------------------------------------------------------------------------- */
 
-#define UI_FB_DEVICE  "/dev/fb0"
-
 /* 2 Hz render loop */
 #define UI_INTERVAL_MS  500u
 
@@ -184,7 +182,7 @@ static void end_session(SurveySession *session, const char *csv_path)
 gm_status_t ui_client_run(const char *pole_top_host)
 {
     /* --- TFT display ---------------------------------------------------- */
-    gm_status_t ds = display_open(UI_FB_DEVICE);
+    gm_status_t ds = display_open();
     if (ds != GM_OK) {
         log_error("ui_client: display_open failed");
         return GM_ERR_IO;

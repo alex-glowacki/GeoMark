@@ -23,9 +23,6 @@
 #include "ui/tft/display.h"
 #include "util/log.h"
 
-/* Must match the wiring ui/client.c uses for the same physical panel. */
-#define PREVIEW_FB_DEVICE "/dev/fb0"
-
 #define PREVIEW_INTERVAL_MS 100u /* 10 Hz -- more responsive than the 2 Hz
                                   * production loop since there's no GNSS
                                   * feed competing for the CPU here */
@@ -71,7 +68,7 @@ static UiEvent translate_input(InputEvent ev)
 
 gm_status_t ui_preview_run(void)
 {
-    gm_status_t ds = display_open(PREVIEW_FB_DEVICE);
+    gm_status_t ds = display_open();
     if (ds != GM_OK) {
         log_error("ui_preview: display_open failed");
         return GM_ERR_IO;

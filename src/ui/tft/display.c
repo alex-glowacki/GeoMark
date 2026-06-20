@@ -2,9 +2,20 @@
  * @file display.c
  * @brief Framebuffer display driver for the Hosyond 7" IPS DSI panel.
  *
+ * Device discovery: scans each /sys/class/graphics/fbN/name file for the DSI
+ * driver's sysfs name (substring "rp1-dsi") rather than assuming a fixed
+ * /dev/fbN index. Confirmed against real hardware that with both HDMI and
+ * DSI connected, fb0 landed on HDMI (sysfs name "vc4drmfb") and fb1 on
+ * DSI (sysfs name "drm-rp1-dsidrmf") -- but that assignment is a function
+ * of boot-time driver probe order, not anything the kernel guarantees, so
+ * a fixed index would silently point at the wrong physical screen the
+ * next time enumeration order shifts (e.g. HDMI unplugged at boot). This
+ * mirrors the same scan-by-capability approach already used by
+ * ui/core/touch_input.c for evdev device discovery, for the same reason.
+ *
  * All draw_* calls write only into the off-screen backbuffer (s_backbuf).
  * Nothing reaches the physical panel until display_present() does one
- * memcpy into the mmap'd /dev/fb0 region -- the panel never displays a
+ * memcpy into the mmap'd DSI fb region -- the panel never displays a
  * partially-drawn frame, which is what produced the old SPI driver's
  * visible flicker (every display_fill_rect()/draw_char() call there was
  * its own slow, independently-visible SPI transaction).
@@ -36,13 +47,72 @@
  * Module state
  * ---------------------------------------------------------------------- */
 
+/* Substring of the DSI driver's sysfs name, confirmed against real
+ * hardware as "drm-rp1-dsidrmf" (the kernel truncates the sysfs name
+ * file's contents; this substring is the stable part tied to the driver
+ * itself, not the truncation point). The HDMI output's sysfs name was
+ * confirmed as "vc4drmfb", which does not contain this substring. */
+#define DSI_FB_NAME_SUBSTR "rp1-dsi"
+
+#define FB_SYSFS_NAME_PATH_FMT "/sys/class/graphics/fb%d/name"
+#define FB_DEV_PATH_FMT        "/dev/fb%d"
+#define FB_SCAN_MAX            8
+
 static int       s_fb_fd        = -1;
-static uint8_t  *s_fb_mem       = NULL;  /* mmap'd /dev/fb0                */
+static uint8_t  *s_fb_mem       = NULL;  /* mmap'd DSI fb device           */
 static size_t    s_fb_mmap_len  = 0;
 static uint16_t *s_backbuf      = NULL;  /* RGB565, TFT_WIDTH * TFT_HEIGHT */
 
 static struct fb_var_screeninfo s_vinfo;
 static struct fb_fix_screeninfo s_finfo;
+
+/* -------------------------------------------------------------------------
+ * DSI framebuffer device discovery
+ * ---------------------------------------------------------------------- */
+
+/**
+ * @brief Scan /sys/class/graphics/fb0..fb(FB_SCAN_MAX-1)/name for the DSI
+ *        driver's sysfs name substring and write the matching /dev/fbN
+ *        path into out_path.
+ *
+ * @param out_path     Buffer to receive the device path, e.g. "/dev/fb1".
+ * @param out_path_len Size of out_path.
+ * @return GM_OK if a match was found, GM_ERR_IO if no fb device on the
+ *         system reports the DSI driver name.
+ */
+static gm_status_t find_dsi_fb_device(char *out_path, size_t out_path_len)
+{
+    for (int i = 0; i < FB_SCAN_MAX; i++) {
+        char sysfs_path[64];
+        snprintf(sysfs_path, sizeof(sysfs_path), FB_SYSFS_NAME_PATH_FMT, i);
+
+        FILE *f = fopen(sysfs_path, "r");
+        if (!f) continue; /* this fbN doesn't exist -- not an error, keep scanning */
+
+        char name[64] = {0};
+        if (!fgets(name, sizeof(name), f)) {
+            fclose(f);
+            continue;
+        }
+        fclose(f);
+
+        /* Strip trailing newline, if present, before logging/matching. */
+        size_t len = strlen(name);
+        if (len > 0 && name[len - 1] == '\n') name[len - 1] = '\0';
+
+        log_info("display: /dev/fb%d reports name \"%s\"", i, name);
+
+        if (strstr(name, DSI_FB_NAME_SUBSTR) != NULL) {
+            snprintf(out_path, out_path_len, FB_DEV_PATH_FMT, i);
+            return GM_OK;
+        }
+    }
+
+    log_error("display: no framebuffer device found with name containing \"%s\" "
+              "(scanned fb0..fb%d) -- is the DSI panel connected?",
+              DSI_FB_NAME_SUBSTR, FB_SCAN_MAX - 1);
+    return GM_ERR_IO;
+}
 
 /* -------------------------------------------------------------------------
  * Backbuffer pixel access
@@ -199,8 +269,14 @@ static const uint8_t s_font5x7[][5] = {
  * Public API
  * ---------------------------------------------------------------------- */
 
-gm_status_t display_open(const char *fb_device)
+gm_status_t display_open(void)
 {
+    char fb_device[32];
+    gm_status_t find_status = find_dsi_fb_device(fb_device, sizeof(fb_device));
+    if (find_status != GM_OK) {
+        return find_status;
+    }
+
     s_fb_fd = open(fb_device, O_RDWR);
     if (s_fb_fd < 0) {
         log_error("display: open %s: %s", fb_device, strerror(errno));

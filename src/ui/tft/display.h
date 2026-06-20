@@ -3,14 +3,29 @@
  * @brief Framebuffer display driver for the Hosyond 7" IPS DSI panel.
  *
  * Hardware: Hosyond 7" 800x480 IPS, MIPI DSI, 5-point capacitive touch.
- * Interface: standard Linux framebuffer device (/dev/fb0). Driver-free on
- * Raspberry Pi OS -- no SPI, no GPIO DC/RST lines, no custom kernel driver.
+ * Interface: standard Linux framebuffer device. Driver-free on Raspberry
+ * Pi OS -- no SPI, no GPIO DC/RST lines, no custom kernel driver.
  * Replaces the earlier 4" ST7796S SPI panel (see git history for that
  * driver if ever needed again).
  *
+ * Device discovery: display_open() does NOT take a device path. On a Pi
+ * with both HDMI and DSI outputs connected, the kernel exposes one fb
+ * device per output (/dev/fb0, /dev/fb1, ...), and -- confirmed against
+ * real hardware -- which index lands on which physical output depends on
+ * driver probe order at boot, NOT on anything stable. With both displays
+ * connected, fb0 was observed as the 1920x1080 HDMI output (sysfs name
+ * "vc4drmfb") and fb1 as the 800x480 DSI panel (sysfs name
+ * "drm-rp1-dsidrmf", truncated by the kernel but stable as the substring
+ * "rp1-dsi"). Hardcoding either index would silently break the moment
+ * boot-time enumeration order changes -- e.g. HDMI unplugged, or powered
+ * on later than the DSI panel. display_open() instead scans each
+ * /sys/class/graphics/fbN/name file for that substring and opens
+ * whichever /dev/fbN matches, the same scan-by-capability approach
+ * ui/core/touch_input.c already uses for its own device discovery.
+ *
  * All drawing happens into an off-screen backbuffer; nothing reaches the
- * physical screen until display_present() copies the whole frame to
- * /dev/fb0 in one mmap'd memcpy. This is what eliminates the visible
+ * physical screen until display_present() copies the whole frame to the
+ * DSI fb device in one mmap'd memcpy. This is what eliminates the visible
  * "draw sweep" flicker the old per-call SPI driver had -- the panel never
  * shows a half-drawn frame.
  *
@@ -66,13 +81,18 @@
  * ---------------------------------------------------------------------- */
 
 /**
- * @brief Open the framebuffer device, query its real geometry/format, and
- *        allocate the off-screen backbuffer.
+ * @brief Find the DSI panel's framebuffer device, open it, query its real
+ *        geometry/format, and allocate the off-screen backbuffer.
  *
- * @param fb_device  Framebuffer device path, e.g. "/dev/fb0".
- * @return GM_OK on success, GM_ERR_IO on any open/mmap/ioctl failure.
+ * Scans each /sys/class/graphics/fbN/name file for the DSI driver's
+ * sysfs name (substring "rp1-dsi") rather than assuming a fixed /dev/fbN
+ * index -- see the file-level doc comment above for why a fixed index is
+ * unsafe.
+ *
+ * @return GM_OK on success. GM_ERR_IO if no matching fb device is found,
+ *         or on any open/mmap/ioctl failure once found.
  */
-gm_status_t display_open(const char *fb_device);
+gm_status_t display_open(void);
 
 /**
  * @brief Flood-fill the entire backbuffer with one color.
