@@ -13,7 +13,9 @@
  * Design notes:
  *   - Fixed-capacity, no heap allocation (UI_GRID_MAX_WIDGETS per screen),
  *     consistent with the rest of GeoMark (gm_point_store_t, SurveySession,
- *     etc. are all fixed-size).
+ *     etc. are all fixed-size). Raised from 24 to 50 to make room for a
+ *     full on-screen QWERTY keyboard (41 keys, see ui/core/keyboard.h)
+ *     sharing a grid with a screen's own form widgets.
  *   - This file + widget.c have zero dependency on ui/tft/display.h, so the
  *     logic is unit-testable on host with no SPI/GPIO/framebuffer present.
  *     Rendering lives in widget_draw.c, the only piece that touches
@@ -108,7 +110,7 @@ typedef struct UiWidget {
  * Widget grid — one screen's worth of focusable widgets
  * -------------------------------------------------------------------------- */
 
-#define UI_GRID_MAX_WIDGETS 24
+#define UI_GRID_MAX_WIDGETS 50
 
 typedef struct {
     UiWidget widgets[UI_GRID_MAX_WIDGETS];
