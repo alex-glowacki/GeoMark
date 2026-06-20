@@ -57,22 +57,41 @@ target_include_directories(test_widget PRIVATE
 )
 add_test(NAME test_widget COMMAND test_widget)
 
-# test_screens: Sleep + Main Menu + Placeholder screens, end to end through
-# the screen stack. Links ui/tft/display.c because the screens' on_render
-# functions take display_* function addresses when building their UiScreen
-# vtables, so the symbols must resolve at link time even though the test
-# never calls display_open() and never invokes on_render. Matches the
-# existing test_collector convention of linking hardware-touching modules
-# without exercising their actual I/O.
+# test_keyboard: on-screen keyboard logic only (key activation mutating a
+# UiKeyboardTarget). No ui/tft/display.h dependency, same convention as
+# test_widget -- keys are plain WIDGET_BUTTON entries, so this needs only
+# widget.c itself, not widget_draw.c or display.c.
+add_executable(test_keyboard
+    ${PROJECT_SOURCE_DIR}/tests/test_keyboard.c
+    ${PROJECT_SOURCE_DIR}/src/ui/core/widget.c
+    ${PROJECT_SOURCE_DIR}/src/ui/core/keyboard.c
+    ${PROJECT_SOURCE_DIR}/src/util/log.c
+)
+target_include_directories(test_keyboard PRIVATE
+    ${PROJECT_SOURCE_DIR}/include
+    ${PROJECT_SOURCE_DIR}/src
+)
+add_test(NAME test_keyboard COMMAND test_keyboard)
+
+# test_screens: Sleep + Main Menu + New Project + Placeholder screens, end
+# to end through the screen stack. Links ui/tft/display.c because the
+# screens' on_render functions take display_* function addresses when
+# building their UiScreen vtables, so the symbols must resolve at link
+# time even though the test never calls display_open() and never invokes
+# on_render. Matches the existing test_collector convention of linking
+# hardware-touching modules without exercising their actual I/O.
 add_executable(test_screens
     ${PROJECT_SOURCE_DIR}/tests/test_screens.c
     ${PROJECT_SOURCE_DIR}/src/ui/core/widget.c
     ${PROJECT_SOURCE_DIR}/src/ui/core/widget_draw.c
+    ${PROJECT_SOURCE_DIR}/src/ui/core/keyboard.c
     ${PROJECT_SOURCE_DIR}/src/ui/core/screen_stack.c
     ${PROJECT_SOURCE_DIR}/src/ui/screens/sleep_screen.c
     ${PROJECT_SOURCE_DIR}/src/ui/screens/sleep_screen_draw.c
     ${PROJECT_SOURCE_DIR}/src/ui/screens/main_menu_screen.c
     ${PROJECT_SOURCE_DIR}/src/ui/screens/main_menu_screen_draw.c
+    ${PROJECT_SOURCE_DIR}/src/ui/screens/new_project_screen.c
+    ${PROJECT_SOURCE_DIR}/src/ui/screens/new_project_screen_draw.c
     ${PROJECT_SOURCE_DIR}/src/ui/screens/placeholder_screen.c
     ${PROJECT_SOURCE_DIR}/src/ui/screens/placeholder_screen_draw.c
     ${PROJECT_SOURCE_DIR}/src/ui/tft/display.c

@@ -18,6 +18,7 @@
 #include "ui/gpio_button.h"
 #include "ui/input.h"
 #include "ui/screens/main_menu_screen.h"
+#include "ui/screens/new_project_screen.h"
 #include "ui/screens/placeholder_screen.h"
 #include "ui/screens/sleep_screen.h"
 #include "ui/tft/display.h"
@@ -99,16 +100,20 @@ gm_status_t ui_preview_run(void)
     UiScreenStack stack;
     ui_stack_init(&stack);
 
-    PlaceholderScreenCtx new_project_stub;
+    PlaceholderScreenCtx job_setup_stub;
     PlaceholderScreenCtx continue_stub;
     PlaceholderScreenCtx stats_stub;
-    placeholder_screen_init(&new_project_stub, "New Project -- not built yet");
-    placeholder_screen_init(&continue_stub,    "Continue Project -- not built yet");
-    placeholder_screen_init(&stats_stub,       "Stats -- not built yet");
+    placeholder_screen_init(&job_setup_stub, "Job Setup -- not built yet");
+    placeholder_screen_init(&continue_stub,  "Continue Project -- not built yet");
+    placeholder_screen_init(&stats_stub,     "Stats -- not built yet");
+
+    NewProjectScreenCtx new_project_ctx;
+    new_project_screen_init(&new_project_ctx, &stack,
+                            placeholder_screen_as_ui_screen(&job_setup_stub));
 
     MainMenuScreenCtx menu_ctx;
     main_menu_screen_init(&menu_ctx, &stack,
-                          placeholder_screen_as_ui_screen(&new_project_stub),
+                          new_project_screen_as_ui_screen(&new_project_ctx),
                           placeholder_screen_as_ui_screen(&continue_stub),
                           placeholder_screen_as_ui_screen(&stats_stub));
 

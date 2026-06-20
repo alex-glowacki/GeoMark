@@ -1,9 +1,15 @@
+#define _GNU_SOURCE
+
 #include <stdbool.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #include "../src/ui/core/screen_stack.h"
 #include "../src/ui/screens/main_menu_screen.h"
+#include "../src/ui/screens/new_project_screen.h"
 #include "../src/ui/screens/placeholder_screen.h"
 #include "../src/ui/screens/sleep_screen.h"
 
@@ -128,12 +134,139 @@ static void test_placeholder_always_unconsumed(void)
 }
 
 /* =========================================================================
+ * New Project: the real screen, reachable from Main Menu, end to end --
+ * type a name via the on-screen keyboard, Create, land on Job Setup.
+ *
+ * HOME is redirected to a disposable mkdtemp() directory for the
+ * duration of this test so it never touches the real
+ * ~/geomark-data -- restored afterward regardless of pass/fail.
+ * ========================================================================= */
+
+static void test_new_project_end_to_end(void)
+{
+    char tmpl[] = "/tmp/geomark_test_home_XXXXXX";
+    char *tmp_home = mkdtemp(tmpl);
+    ASSERT(tmp_home != NULL, "mkdtemp created a disposable HOME for this test");
+
+    const char *real_home = getenv("HOME");
+    char real_home_buf[512] = {0};
+    if (real_home) strncpy(real_home_buf, real_home, sizeof(real_home_buf) - 1);
+    setenv("HOME", tmp_home, 1);
+
+    UiScreenStack stack;
+    ui_stack_init(&stack);
+
+    PlaceholderScreenCtx job_setup_stub;
+    PlaceholderScreenCtx continue_stub;
+    PlaceholderScreenCtx stats_stub;
+    placeholder_screen_init(&job_setup_stub, "Job Setup -- not built yet");
+    placeholder_screen_init(&continue_stub,  "Continue Project -- not built yet");
+    placeholder_screen_init(&stats_stub,     "Stats -- not built yet");
+
+    NewProjectScreenCtx new_project_ctx;
+    new_project_screen_init(&new_project_ctx, &stack,
+                            placeholder_screen_as_ui_screen(&job_setup_stub));
+
+    MainMenuScreenCtx menu_ctx;
+    main_menu_screen_init(&menu_ctx, &stack,
+                          new_project_screen_as_ui_screen(&new_project_ctx),
+                          placeholder_screen_as_ui_screen(&continue_stub),
+                          placeholder_screen_as_ui_screen(&stats_stub));
+
+    SleepScreenCtx sleep_ctx;
+    sleep_screen_init(&sleep_ctx, &stack, main_menu_screen_as_ui_screen(&menu_ctx));
+    ui_stack_push(&stack, sleep_screen_as_ui_screen(&sleep_ctx));
+
+    UiEvent nav_down = { .type = UI_EVENT_NAV_DOWN };
+    UiEvent activate  = { .type = UI_EVENT_ACTIVATE };
+    ui_stack_dispatch_event(&stack, nav_down); /* Sleep -> Main Menu */
+    ui_stack_dispatch_event(&stack, activate); /* Start New Project    */
+
+    ASSERT(ui_stack_top(&stack)->ctx == &new_project_ctx,
+          "The real New Project screen is on top, not a placeholder");
+    ASSERT(new_project_ctx.grid.widgets[new_project_ctx.grid.focus_idx].kind
+              == WIDGET_TEXT_FIELD,
+          "New Project on_enter focuses the name field");
+
+    /* Type "TESTSITE" by activating each letter's key in turn -- proves
+     * the keyboard module's keys actually reach this screen's own
+     * name_buf through the UiKeyboardTarget-first-member contract, not
+     * just in keyboard.c's own isolated tests. */
+    const char *name = "TESTSITE";
+    for (const char *p = name; *p; p++) {
+        int32_t idx = -1;
+        for (uint32_t i = 0; i < new_project_ctx.grid.count; i++) {
+            UiWidget *w = &new_project_ctx.grid.widgets[i];
+            if (w->kind == WIDGET_BUTTON && w->label && w->label[0] == *p
+                && w->label[1] == '\0') {
+                idx = (int32_t)i;
+                break;
+            }
+        }
+        ASSERT(idx >= 0, "Each letter of the test name has a matching key");
+        if (idx < 0) continue;
+        new_project_ctx.grid.focus_idx = idx;
+        ui_grid_handle_event(&new_project_ctx.grid, activate);
+    }
+    ASSERT(strcmp(new_project_ctx.name_buf, name) == 0,
+          "Typing through the keyboard produced the expected name");
+
+    /* Press Create. */
+    int32_t create_idx = -1;
+    for (uint32_t i = 0; i < new_project_ctx.grid.count; i++) {
+        UiWidget *w = &new_project_ctx.grid.widgets[i];
+        if (w->kind == WIDGET_BUTTON && w->label &&
+            strcmp(w->label, "Create Project") == 0) {
+            create_idx = (int32_t)i;
+            break;
+        }
+    }
+    ASSERT(create_idx >= 0, "Create Project button exists");
+    new_project_ctx.grid.focus_idx = create_idx;
+    ui_grid_handle_event(&new_project_ctx.grid, activate);
+
+    ASSERT(new_project_ctx.status == NEW_PROJECT_STATUS_NONE,
+          "Create with a valid, new name reports no error status");
+    ASSERT(ui_stack_top(&stack)->ctx == &job_setup_stub,
+          "Create pushes the Job Setup stub on success");
+
+    char expected_dir[600];
+    snprintf(expected_dir, sizeof(expected_dir),
+             "%s/geomark-data/projects/%s", tmp_home, name);
+    struct stat st;
+    ASSERT(stat(expected_dir, &st) == 0 && S_ISDIR(st.st_mode),
+          "The project directory was actually created on disk");
+
+    /* Clean up the disposable HOME tree this test created -- a fixed,
+     * known three-level structure (tmp_home/geomark-data/projects/<name>),
+     * so plain rmdir() in reverse order is enough; no need for a generic
+     * recursive-delete helper for what is always exactly this shape. */
+    rmdir(expected_dir);
+    char projects_dir[560];
+    snprintf(projects_dir, sizeof(projects_dir), "%s/geomark-data/projects", tmp_home);
+    rmdir(projects_dir);
+    char data_dir[540];
+    snprintf(data_dir, sizeof(data_dir), "%s/geomark-data", tmp_home);
+    rmdir(data_dir);
+    rmdir(tmp_home);
+
+    /* Restore the real HOME unconditionally, including on assertion
+     * failure above -- this is a test-harness cleanup step, not a
+     * pass/fail condition itself. */
+    if (real_home_buf[0])
+        setenv("HOME", real_home_buf, 1);
+    else
+        unsetenv("HOME");
+}
+
+/* =========================================================================
  * main
  * ========================================================================= */
 int main(void)
 {
     test_sleep_to_menu_to_stub_and_back();
     test_placeholder_always_unconsumed();
+    test_new_project_end_to_end();
 
     if (g_tests_failed == 0) {
         printf("All %d screen tests passed.\n", g_tests_run);
