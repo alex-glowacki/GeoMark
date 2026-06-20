@@ -27,6 +27,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <errno.h>
+#include <time.h>
 #include <sys/ioctl.h>
 #include <linux/input.h>
 
@@ -36,6 +37,18 @@
 #define TOUCH_MAX_SCAN_NODES 32
 #define TOUCH_DEV_PATH_FMT   "/dev/input/event%d"
 
+/* Minimum time between two resolved taps. Real capacitive contact can
+ * produce a brief BTN_TOUCH bounce (down-up-down-up within a few
+ * milliseconds) right at the moment of contact or release, which without
+ * a debounce window resolves as two separate taps from a single physical
+ * touch -- observed on real hardware as "tap advances the screen, then
+ * immediately bounces back" (the second spurious tap landing wherever
+ * the finger was actually lifted, which may hit a different control on
+ * the newly-shown screen). 150ms is comfortably longer than any
+ * mechanical/capacitive bounce but short enough not to feel laggy for a
+ * deliberate second tap. */
+#define TOUCH_DEBOUNCE_MS 150u
+
 /* -------------------------------------------------------------------------
  * Module state
  * ---------------------------------------------------------------------- */
@@ -44,6 +57,15 @@ static int      s_fd            = -1;
 static int32_t  s_last_x        = -1;
 static int32_t  s_last_y        = -1;
 static bool     s_touch_down    = false;
+static uint32_t s_last_tap_ms   = 0;     /* monotonic time of last resolved tap */
+static bool     s_have_last_tap = false; /* false until the first tap ever resolves */
+
+static uint32_t monotonic_ms(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint32_t)(ts.tv_sec * 1000u + ts.tv_nsec / 1000000u);
+}
 
 /* -------------------------------------------------------------------------
  * Device discovery
@@ -113,9 +135,11 @@ gm_status_t touch_input_open(void)
         return GM_ERR_IO;
     }
 
-    s_last_x     = -1;
-    s_last_y     = -1;
-    s_touch_down = false;
+    s_last_x        = -1;
+    s_last_y        = -1;
+    s_touch_down    = false;
+    s_last_tap_ms   = 0;
+    s_have_last_tap = false;
     return GM_OK;
 }
 
@@ -123,9 +147,16 @@ bool touch_input_poll(UiEvent *out)
 {
     if (s_fd < 0 || !out) return false;
 
-    bool reported_tap = false;
     struct input_event ev;
 
+    /* Drain pending events one at a time. Stop as soon as a tap resolves
+     * rather than continuing to drain the rest of the buffer -- a second
+     * BTN_TOUCH down/up pair later in the same read burst (a contact
+     * bounce from the same physical touch) must not be allowed to
+     * silently replace the tap we already resolved this call. Any events
+     * left unread stay queued by the kernel and get picked up on the
+     * next poll, so nothing is lost -- they just won't resolve a second
+     * tap inside the debounce window below. */
     while (read(s_fd, &ev, sizeof(ev)) == (ssize_t)sizeof(ev)) {
         switch (ev.type) {
         case EV_ABS:
@@ -140,13 +171,25 @@ bool touch_input_poll(UiEvent *out)
                 if (ev.value == 1) {
                     s_touch_down = true;
                 } else if (ev.value == 0 && s_touch_down) {
-                    /* Release: resolve one tap at the last known position. */
+                    /* Release: resolve one tap at the last known position,
+                     * unless it arrives within the debounce window after
+                     * the previous resolved tap (contact bounce, not a
+                     * deliberate second tap). */
                     s_touch_down = false;
-                    if (s_last_x >= 0 && s_last_y >= 0) {
+
+                    uint32_t now = monotonic_ms();
+                    bool debounced = s_have_last_tap &&
+                                      (now - s_last_tap_ms) < TOUCH_DEBOUNCE_MS;
+
+                    if (!debounced && s_last_x >= 0 && s_last_y >= 0) {
                         out->type = UI_EVENT_TAP;
                         out->x = clamp_coord(s_last_x, TFT_WIDTH);
                         out->y = clamp_coord(s_last_y, TFT_HEIGHT);
-                        reported_tap = true;
+
+                        s_last_tap_ms   = now;
+                        s_have_last_tap = true;
+
+                        return true;
                     }
                 }
             }
@@ -158,7 +201,7 @@ bool touch_input_poll(UiEvent *out)
         }
     }
 
-    return reported_tap;
+    return false;
 }
 
 void touch_input_close(void)
