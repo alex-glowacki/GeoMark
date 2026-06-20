@@ -31,11 +31,6 @@ void new_project_screen_render(void *raw_ctx)
 {
     NewProjectScreenCtx *ctx = (NewProjectScreenCtx *)raw_ctx;
 
-    /* A status message (e.g. "name already exists") stays up only until
-     * the name is actually edited again -- detected here by comparing
-     * the current length against the length at the moment the status was
-     * set, rather than clearing it on every render (which would make it
-     * flash for a single frame and vanish before anyone could read it). */
     if (ctx->status != NEW_PROJECT_STATUS_NONE &&
         ctx->name_len != ctx->name_len_at_status) {
         ctx->status = NEW_PROJECT_STATUS_NONE;

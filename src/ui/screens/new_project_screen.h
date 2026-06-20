@@ -15,9 +15,7 @@
  * Where this fits in the nav tree: pushed by Main Menu's "Start New
  * Project" button (see ui/preview.c, which wires the real screen in where
  * a PlaceholderScreenCtx stub used to sit). Create pushes Job Setup --
- * not built yet, so a PlaceholderScreenCtx stub stands in for it here,
- * exactly the same pattern Main Menu already uses for its own
- * not-yet-built destinations.
+ * the real job_setup_screen as of this session.
  */
 
 #ifndef GEOMARK_UI_SCREENS_NEW_PROJECT_SCREEN_H
@@ -71,8 +69,7 @@ typedef struct {
 /**
  * job_setup_screen is caller-supplied, same convention
  * main_menu_screen_init() already uses for its own not-yet-built
- * destinations -- today it's a PlaceholderScreenCtx stub; swap in the
- * real Job Setup screen with no change to this file once it exists.
+ * destinations -- today it's the real job_setup_screen.
  */
 void new_project_screen_init(NewProjectScreenCtx *ctx, UiScreenStack *stack,
                              UiScreen job_setup_screen);
