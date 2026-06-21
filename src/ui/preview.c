@@ -17,6 +17,7 @@
 #include "ui/core/touch_input.h"
 #include "ui/gpio_button.h"
 #include "ui/input.h"
+#include "ui/screens/continue_project_screen.h"
 #include "ui/screens/job_create_screen.h"
 #include "ui/screens/job_setup_screen.h"
 #include "ui/screens/main_menu_screen.h"
@@ -108,10 +109,8 @@ gm_status_t ui_preview_run(void)
     project_context_init(&project_ctx);
 
     PlaceholderScreenCtx measure_points_stub;
-    PlaceholderScreenCtx continue_stub;
     PlaceholderScreenCtx stats_stub;
     placeholder_screen_init(&measure_points_stub, "Measure Points -- not built yet");
-    placeholder_screen_init(&continue_stub,       "Continue Project -- not built yet");
     placeholder_screen_init(&stats_stub,          "Stats -- not built yet");
 
     JobCreateScreenCtx job_create_ctx;
@@ -129,6 +128,11 @@ gm_status_t ui_preview_run(void)
                           job_create_screen_as_ui_screen(&job_create_ctx),
                           open_job_screen_as_ui_screen(&open_job_ctx));
 
+    ContinueProjectScreenCtx continue_project_ctx;
+    continue_project_screen_init(&continue_project_ctx, &stack,
+                                 job_setup_screen_as_ui_screen(&job_setup_ctx),
+                                 &project_ctx);
+
     NewProjectScreenCtx new_project_ctx;
     new_project_screen_init(&new_project_ctx, &stack,
                             job_setup_screen_as_ui_screen(&job_setup_ctx),
@@ -137,7 +141,7 @@ gm_status_t ui_preview_run(void)
     MainMenuScreenCtx menu_ctx;
     main_menu_screen_init(&menu_ctx, &stack,
                           new_project_screen_as_ui_screen(&new_project_ctx),
-                          placeholder_screen_as_ui_screen(&continue_stub),
+                          continue_project_screen_as_ui_screen(&continue_project_ctx),
                           placeholder_screen_as_ui_screen(&stats_stub));
 
     SleepScreenCtx sleep_ctx;
