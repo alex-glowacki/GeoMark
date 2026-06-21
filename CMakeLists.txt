@@ -59,6 +59,8 @@ set(GEOMARK_SOURCES
     src/ui/screens/main_menu_screen_draw.c
     src/ui/screens/new_project_screen.c
     src/ui/screens/new_project_screen_draw.c
+    src/ui/screens/continue_project_screen.c
+    src/ui/screens/continue_project_screen_draw.c
     src/ui/screens/job_setup_screen.c
     src/ui/screens/job_setup_screen_draw.c
     src/ui/screens/job_create_screen.c

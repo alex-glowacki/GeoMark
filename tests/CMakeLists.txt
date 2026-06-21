@@ -93,6 +93,8 @@ add_executable(test_screens
     ${PROJECT_SOURCE_DIR}/src/ui/screens/main_menu_screen_draw.c
     ${PROJECT_SOURCE_DIR}/src/ui/screens/new_project_screen.c
     ${PROJECT_SOURCE_DIR}/src/ui/screens/new_project_screen_draw.c
+    ${PROJECT_SOURCE_DIR}/src/ui/screens/continue_project_screen.c
+    ${PROJECT_SOURCE_DIR}/src/ui/screens/continue_project_screen_draw.c
     ${PROJECT_SOURCE_DIR}/src/ui/screens/job_setup_screen.c
     ${PROJECT_SOURCE_DIR}/src/ui/screens/job_setup_screen_draw.c
     ${PROJECT_SOURCE_DIR}/src/ui/screens/job_create_screen.c
