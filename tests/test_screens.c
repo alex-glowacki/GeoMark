@@ -1423,6 +1423,16 @@ static void test_measure_points_capture_and_persist_end_to_end(void)
           "The captured point is numbered 1 (first point in this job)");
     ASSERT(fabs(measure_points_ctx.points.points[0].lat - 47.9253) < 1e-6,
           "The captured point's latitude matches the injected fix");
+    ASSERT(strcmp(measure_points_ctx.points.points[0].name, "1") == 0,
+          "A brand-new screen's first point gets the default name \"1\"");
+    ASSERT(fabs(measure_points_ctx.points.points[0].target_height_m) < 1e-9,
+          "With no target height typed, target_height_m defaults to 0");
+    ASSERT(fabs(measure_points_ctx.points.points[0].raw_alt - 250.0) < 1e-6,
+          "raw_alt matches the injected fix's altitude");
+    ASSERT(fabs(measure_points_ctx.points.points[0].alt - 250.0) < 1e-6,
+          "With zero target height, corrected alt equals raw_alt");
+    ASSERT(strcmp(measure_points_ctx.name_buf, "2") == 0,
+          "A purely-numeric point name auto-increments to \"2\" after capture");
 
     /* Confirm it actually landed on disk, not just in memory. */
     char csv_path[600];
@@ -1480,6 +1490,146 @@ static void test_measure_points_capture_and_persist_end_to_end(void)
         unsetenv("HOME");
 }
 
+/* -------------------------------------------------------------------------
+ * Typed Point name / Code / Target height fields: target-height
+ * elevation correction math, code round-trip, and the "non-numeric
+ * name is left untouched" half of the auto-increment rule (the
+ * "purely-numeric name advances" half is already covered by the
+ * capture-and-persist test above, whose screen starts with the default
+ * numeric name "1"). Constructs MeasurePointsScreenCtx directly (not
+ * through the full nav tree) with a disposable HOME -- this test cares
+ * about field-typing/capture behavior, not the New Project -> Job
+ * Create navigation path the other end-to-end test already covers.
+ * ---------------------------------------------------------------------- */
+
+static void test_measure_points_typed_fields_and_height_correction(void)
+{
+    char tmpl[] = "/tmp/geomark_test_home_XXXXXX";
+    char *tmp_home = mkdtemp(tmpl);
+    ASSERT(tmp_home != NULL, "mkdtemp created a disposable HOME for this test");
+
+    UiScreenStack stack;
+    ui_stack_init(&stack);
+
+    JobContext job_ctx;
+    job_context_set(&job_ctx, tmp_home, "TESTPROJ", "TESTJOB");
+    mkdir(tmp_home, 0755); /* job_dir's parent levels don't need to exist for
+                            * this test -- it never calls measure_points_
+                            * append_csv() (no JobContext-resolved I/O path
+                            * exercised here), only the in-memory capture
+                            * logic the feed/grid drive directly. */
+
+    TestFeedState feed_state;
+    memset(&feed_state, 0, sizeof(feed_state));
+
+    MeasurePointsScreenCtx ctx;
+    measure_points_screen_init(&ctx, &stack, &job_ctx, make_test_feed(&feed_state));
+    ui_stack_push(&stack, measure_points_screen_as_ui_screen(&ctx));
+
+    ASSERT(strcmp(ctx.name_buf, "1") == 0,
+          "A freshly initialized screen defaults Point name to \"1\"");
+
+    feed_state.next.lat         = 47.9253;
+    feed_state.next.lon         = -97.0329;
+    feed_state.next.alt         = 250.0; /* raw antenna altitude */
+    feed_state.next.fix_quality = (uint8_t)FIX_RTK_FIXED;
+    feed_state.next.hdop        = 0.8;
+    feed_state.next.num_sats    = 12;
+    feed_state.next.valid       = true;
+    ui_stack_tick(&stack, 0);
+
+    /* Type a custom point name (non-numeric -- should NOT auto-increment),
+     * a code, and a target height, the same per-letter keyboard-driven
+     * pattern every other typed-field test in this file already uses. */
+    UiWidget *name_field = find_widget(&ctx.grid, WIDGET_TEXT_FIELD, "Point name");
+    ASSERT(name_field != NULL, "Point name text field exists on Measure Points");
+    if (name_field)
+        activate_widget_directly(&ctx.grid, name_field);
+    /* Backspace away the default "1" first via the keyboard's Del key,
+     * then type the custom name. */
+    UiWidget *del_key = find_widget(&ctx.grid, WIDGET_BUTTON, "Del");
+    ASSERT(del_key != NULL, "Keyboard Del key exists on Measure Points");
+    if (del_key)
+        activate_widget_directly(&ctx.grid, del_key);
+    ASSERT(ctx.name_len == 0, "Del clears the default \"1\" from Point name");
+
+    const char *custom_name = "CP";
+    for (const char *p = custom_name; *p; p++) {
+        UiWidget *key = find_widget(&ctx.grid, WIDGET_BUTTON, (char[]){ *p, '\0' });
+        ASSERT(key != NULL, "Each letter of the custom point name has a matching key");
+        if (key) activate_widget_directly(&ctx.grid, key);
+    }
+    ASSERT(strcmp(ctx.name_buf, custom_name) == 0,
+          "Typing through the keyboard produced the custom point name");
+
+    UiWidget *code_field = find_widget(&ctx.grid, WIDGET_TEXT_FIELD, "Code");
+    ASSERT(code_field != NULL, "Code text field exists on Measure Points");
+    if (code_field)
+        activate_widget_directly(&ctx.grid, code_field);
+    const char *code = "CONC";
+    for (const char *p = code; *p; p++) {
+        UiWidget *key = find_widget(&ctx.grid, WIDGET_BUTTON, (char[]){ *p, '\0' });
+        ASSERT(key != NULL, "Each letter of the test code has a matching key");
+        if (key) activate_widget_directly(&ctx.grid, key);
+    }
+    ASSERT(strcmp(ctx.code_buf, code) == 0,
+          "Typing through the keyboard produced the expected code");
+
+    UiWidget *height_field = find_widget(&ctx.grid, WIDGET_TEXT_FIELD, "Target height");
+    ASSERT(height_field != NULL, "Target height text field exists on Measure Points");
+    if (height_field)
+        activate_widget_directly(&ctx.grid, height_field);
+    /* "65" via two digit keys -- 6.5 ft is not reachable with this
+     * keyboard's digit-only/no-decimal-point key set (see
+     * ui/core/keyboard.h's closed character set), so this test uses a
+     * whole-number height; the atof()/feet<->meters conversion math
+     * itself is exercised regardless of whether the input has a
+     * fractional part. */
+    for (const char *p = "65"; *p; p++) {
+        UiWidget *key = find_widget(&ctx.grid, WIDGET_BUTTON, (char[]){ *p, '\0' });
+        ASSERT(key != NULL, "Each digit of the test height has a matching key");
+        if (key) activate_widget_directly(&ctx.grid, key);
+    }
+    ASSERT(strcmp(ctx.height_buf, "65") == 0,
+          "Typing through the keyboard produced the expected height string");
+
+    UiWidget *capture_btn = find_widget(&ctx.grid, WIDGET_BUTTON, "Capture Point");
+    ASSERT(capture_btn != NULL, "Capture Point button exists on Measure Points");
+    if (capture_btn)
+        activate_widget_directly(&ctx.grid, capture_btn);
+
+    ASSERT(ctx.status == MEASURE_POINTS_STATUS_NONE,
+          "Capturing with all three fields filled reports no error status");
+    ASSERT(ctx.points.count == 1, "Exactly one point was captured");
+
+    const MeasurePoint *pt = &ctx.points.points[0];
+    ASSERT(strcmp(pt->name, custom_name) == 0,
+          "The captured point's name matches what was typed");
+    ASSERT(strcmp(pt->code, code) == 0,
+          "The captured point's code matches what was typed");
+    ASSERT(fabs(pt->raw_alt - 250.0) < 1e-6,
+          "raw_alt preserves the feed's as-measured altitude");
+
+    /* 65 international feet -> meters via the same GM_M_PER_INTL_FOOT
+     * constant units.h itself defines (0.3048 m exactly) -- computed
+     * independently here, not by calling gm_intl_ft_to_m(), so this
+     * assertion would actually catch a regression in either function,
+     * not just confirm they agree with each other. */
+    double expected_height_m = 65.0 * 0.3048;
+    ASSERT(fabs(pt->target_height_m - expected_height_m) < 1e-6,
+          "target_height_m matches 65 ft converted to meters");
+
+    double expected_alt = 250.0 - expected_height_m;
+    ASSERT(fabs(pt->alt - expected_alt) < 1e-6,
+          "Corrected alt equals raw_alt minus the target height correction");
+
+    ASSERT(strcmp(ctx.name_buf, custom_name) == 0,
+          "A non-numeric point name is left untouched after capture "
+          "(no auto-increment)");
+
+    rmdir(tmp_home);
+}
+
 /* =========================================================================
  * main
  * ========================================================================= */
@@ -1496,6 +1646,7 @@ int main(void)
     test_measure_points_no_job_status();
     test_measure_points_no_fix_blocks_capture();
     test_measure_points_capture_and_persist_end_to_end();
+    test_measure_points_typed_fields_and_height_correction();
 
     if (g_tests_failed == 0) {
         printf("All %d screen tests passed.\n", g_tests_run);
