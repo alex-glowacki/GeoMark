@@ -22,7 +22,13 @@
  * On Create: writes job.ini via job_metadata_save() under
  * ~/geomark-data/projects/<project>/<job>/ and pushes the caller-supplied
  * measure_points_screen (today a PlaceholderScreenCtx stub -- Measure
- * Points is not built yet).
+ * Points is not built yet). <project> comes from the caller-supplied
+ * ProjectContext (see project_context.h) -- the actual project name New
+ * Project created, not a hardcoded placeholder (see this header's
+ * history for the JOB_CREATE_PLACEHOLDER_PROJECT seam this replaced). If
+ * project_ctx has no project set (e.g. this screen reached directly,
+ * bypassing New Project), Create reports JOB_CREATE_STATUS_NO_PROJECT
+ * rather than silently writing somewhere wrong.
  */
 
 #ifndef GEOMARK_UI_SCREENS_JOB_CREATE_SCREEN_H
@@ -34,11 +40,13 @@
 #include "ui/core/keyboard.h"
 #include "ui/core/screen_stack.h"
 #include "ui/core/widget.h"
+#include "ui/screens/project_context.h"
 
 typedef enum {
     JOB_CREATE_STATUS_NONE = 0,
     JOB_CREATE_STATUS_EMPTY_NAME,
     JOB_CREATE_STATUS_IO_ERROR,
+    JOB_CREATE_STATUS_NO_PROJECT,
 } JobCreateStatus;
 
 /**
@@ -69,6 +77,7 @@ typedef struct {
 
     UiScreenStack *stack;           /* not owned */
     UiScreen measure_points_screen; /* pushed by Create on success */
+    ProjectContext *project_ctx;    /* not owned; read-only here */
 
     gm_job_metadata_t meta;
 
@@ -99,8 +108,12 @@ typedef struct {
                                           * identical pattern for why */
 } JobCreateScreenCtx;
 
+/**
+ * project_ctx is not owned and must outlive this screen -- it supplies
+ * the actual project name jobs are created under (see project_context.h).
+ */
 void job_create_screen_init(JobCreateScreenCtx *ctx, UiScreenStack *stack,
-                            UiScreen measure_points_screen);
+                            UiScreen measure_points_screen, ProjectContext *project_ctx);
 
 /** Render implementation — job_create_screen_draw.c (depends on ui/tft/display.h). */
 void job_create_screen_render(void *ctx);

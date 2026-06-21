@@ -68,11 +68,10 @@ static const char *const COGO_OPTIONS[] = {
 /* -------------------------------------------------------------------------
  * Job directory creation -- same three-level mkdir pattern
  * new_project_screen.c's create_project_dir() already uses, one level
- * deeper (adds /<job> under the already-created /<project>). Project
- * name is not known to this screen (New Project doesn't pass it through
- * yet -- seam flagged below), so for now this writes under a fixed
- * placeholder project directory; revisit once project-to-job threading
- * is wired end to end.
+ * deeper (adds /<job> under the already-created /<project>). project_name
+ * is the real project from the caller's ProjectContext (see
+ * job_create_screen.h's file-level doc comment) -- on_create() below
+ * confirms a project is actually set before this is ever called.
  * ---------------------------------------------------------------------- */
 
 static bool mkdir_if_missing(const char *path)
@@ -85,18 +84,14 @@ static bool mkdir_if_missing(const char *path)
 }
 
 /**
- * NOTE: project threading seam -- New Project's Create button currently
- * pushes Job Setup with no project name carried along (see
- * new_project_screen.c's on_create(); ui_stack_push() only passes a
- * UiScreen, not arbitrary data). Until that's wired, jobs are created
- * under a fixed "default-project" directory rather than the actual
- * project just created. Flagged here rather than silently guessing at a
- * threading mechanism -- revisit when Job Setup's real entry point from
- * New Project is wired with the actual project name.
+ * project_name is the actual project created by New Project, supplied via
+ * the caller's ProjectContext (see job_create_screen.h's file-level doc
+ * comment) -- the JOB_CREATE_PLACEHOLDER_PROJECT seam this function used
+ * to hardcode is gone; the caller (on_create() below) is responsible for
+ * confirming a project is actually set before calling this.
  */
-#define JOB_CREATE_PLACEHOLDER_PROJECT "default-project"
-
-static int create_job_dir(const char *job_name, char *out_dir, size_t out_dir_len)
+static int create_job_dir(const char *project_name, const char *job_name,
+                          char *out_dir, size_t out_dir_len)
 {
     const char *home = getenv("HOME");
     if (!home || home[0] == '\0') {
@@ -112,7 +107,7 @@ static int create_job_dir(const char *job_name, char *out_dir, size_t out_dir_le
 
     snprintf(base,     sizeof(base),     "%s/geomark-data", home);
     snprintf(projects, sizeof(projects), "%s/projects", base);
-    snprintf(project,  sizeof(project),  "%s/%s", projects, JOB_CREATE_PLACEHOLDER_PROJECT);
+    snprintf(project,  sizeof(project),  "%s/%s", projects, project_name);
     snprintf(jobs,      sizeof(jobs),     "%s", project); /* jobs live directly under the project dir */
     snprintf(job,        sizeof(job),      "%s/%s", jobs, job_name);
 
@@ -269,8 +264,15 @@ static void on_create(UiWidget *self, void *screen_ctx)
         return;
     }
 
+    if (!ctx->project_ctx || !project_context_has_project(ctx->project_ctx)) {
+        log_error("job_create: no active project set -- cannot resolve job directory");
+        ctx->status = JOB_CREATE_STATUS_NO_PROJECT;
+        ctx->status_job_name_len_snapshot = ctx->job_name_len;
+        return;
+    }
+
     char job_dir[400];
-    int rc = create_job_dir(ctx->meta.job_name, job_dir, sizeof(job_dir));
+    int rc = create_job_dir(ctx->project_ctx->name, ctx->meta.job_name, job_dir, sizeof(job_dir));
     if (rc < 0) {
         ctx->status = JOB_CREATE_STATUS_IO_ERROR;
         ctx->status_job_name_len_snapshot = ctx->job_name_len;
@@ -306,11 +308,12 @@ static void on_keyboard_done(void *screen_ctx)
  * ---------------------------------------------------------------------- */
 
 void job_create_screen_init(JobCreateScreenCtx *ctx, UiScreenStack *stack,
-                            UiScreen measure_points_screen)
+                            UiScreen measure_points_screen, ProjectContext *project_ctx)
 {
     memset(ctx, 0, sizeof(*ctx));
     ctx->stack                  = stack;
     ctx->measure_points_screen  = measure_points_screen;
+    ctx->project_ctx            = project_ctx;
 
     job_metadata_defaults(&ctx->meta);
 

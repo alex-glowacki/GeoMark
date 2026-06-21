@@ -8,10 +8,8 @@
  *
  * Same pattern as main_menu_screen.h: the two destination screens are
  * caller-supplied so this screen never needs to know what Job
- * Create/Open actually are. Today Open Existing Job is a
- * PlaceholderScreenCtx stub (browsing saved jobs is separate scope, its
- * own screen, not yet built) while Create New Job is the real
- * job_create_screen.
+ * Create/Open actually are. Both are now real screens (open_job_screen.h,
+ * job_create_screen.h).
  */
 
 #ifndef GEOMARK_UI_SCREENS_JOB_SETUP_SCREEN_H
