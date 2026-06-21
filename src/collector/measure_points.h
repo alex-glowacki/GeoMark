@@ -58,6 +58,13 @@
  *  no reason for the two limits to diverge by accident. */
 #define GM_MEASURE_POINT_CODE_MAX 32
 
+/** Max length of a point name string, including NUL. Point names are
+ *  typically short sequential numbers ("1", "2", ...) but may be any
+ *  free-form string the field crew types -- see
+ *  measure_points_screen.h's auto-increment doc comment for the rule
+ *  governing what happens to this field between captures. */
+#define GM_MEASURE_POINT_NAME_MAX 32
+
 /** Max points held in memory / round-tripped through points.csv per job.
  *  Matches SURVEY_POINTS_MAX's order of magnitude; revisit if a real job
  *  ever approaches this, same "raise when real data demands it, not on
@@ -68,15 +75,36 @@
  * A single captured point
  * ---------------------------------------------------------------------- */
 
+/**
+ * A single captured point.
+ *
+ * Elevation convention (matches standard RTK practice -- see, e.g.,
+ * Trimble's antenna-height documentation): the GNSS antenna measures
+ * its own phase center position, not the ground point being surveyed.
+ * raw_alt is that as-measured antenna altitude; alt is the corrected
+ * ground elevation (raw_alt - target_height_m), which is what every
+ * downstream consumer (the map panel, future exports) should actually
+ * use. Both are kept -- not just alt -- because a target-height entry
+ * mistake discovered after the fact needs the original raw measurement
+ * to recompute from, the same reason Trimble's Point Manager keeps a
+ * point's antenna height as an editable, recoverable record rather
+ * than baking the correction in irreversibly.
+ */
 typedef struct {
-    double lat;          /* decimal degrees, WGS84, +N */
-    double lon;          /* decimal degrees, WGS84, +E */
-    double alt;          /* meters above MSL -- internal storage unit, see units.h */
-    uint8_t fix_quality; /* gm_fix_type_t value at capture time */
+    double lat;             /* decimal degrees, WGS84, +N */
+    double lon;             /* decimal degrees, WGS84, +E */
+    double alt;             /* meters above MSL, CORRECTED ground elevation
+                             * (raw_alt - target_height_m) -- see struct doc comment */
+    double raw_alt;         /* meters above MSL, as-measured antenna altitude,
+                             * before the target-height correction */
+    double target_height_m; /* meters; vertical offset from ground point
+                             * to antenna phase center at capture time */
+    uint8_t fix_quality;    /* gm_fix_type_t value at capture time */
     double hdop;
     uint8_t num_sats;
     time_t timestamp;                     /* UTC epoch seconds at capture time */
     uint32_t point_num;                   /* 1-based sequence within the job */
+    char name[GM_MEASURE_POINT_NAME_MAX]; /* point name/number, typed by the crew */
     char code[GM_MEASURE_POINT_CODE_MAX]; /* free-form; not yet interpreted */
 } MeasurePoint;
 

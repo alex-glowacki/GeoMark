@@ -58,9 +58,16 @@ gm_status_t measure_points_add(MeasurePointStore *store, MeasurePoint point)
  * ---------------------------------------------------------------------- */
 
 /* Column order is fixed and must match between the header row written
- * here and the header row checked in measure_points_load_csv() below. */
+ * here and the header row checked in measure_points_load_csv() below.
+ * name is the FINAL column, same reasoning code already had (a free-
+ * form field needs to be the rest-of-line catch, not a %s-matched
+ * token -- see measure_points_load_csv()'s own doc comment on why an
+ * empty trailing %s field doesn't parse). With two free-form trailing
+ * fields (name, code) now, name comes second-to-last and is parsed up
+ * to the LAST comma in the line, with code taking everything after
+ * that -- see the parsing comment below for the exact split logic. */
 static const char *CSV_HEADER =
-    "point_num,timestamp,lat,lon,alt,fix_quality,hdop,num_sats,code\n";
+    "point_num,timestamp,lat,lon,alt,raw_alt,target_height_m,fix_quality,hdop,num_sats,name,code\n";
 
 void measure_points_csv_path(const char *job_dir, char *buf, size_t buf_len)
 {
@@ -89,15 +96,18 @@ gm_status_t measure_points_append_csv(const char *path, const MeasurePoint *poin
     if (!exists)
         fputs(CSV_HEADER, f);
 
-    fprintf(f, "%u,%lld,%.8f,%.8f,%.3f,%u,%.2f,%u,%s\n",
+    fprintf(f, "%u,%lld,%.8f,%.8f,%.3f,%.3f,%.3f,%u,%.2f,%u,%s,%s\n",
             point->point_num,
             (long long)point->timestamp,
             point->lat,
             point->lon,
             point->alt,
+            point->raw_alt,
+            point->target_height_m,
             (unsigned)point->fix_quality,
             point->hdop,
             (unsigned)point->num_sats,
+            point->name,
             point->code);
 
     fclose(f);
@@ -150,35 +160,57 @@ gm_status_t measure_points_load_csv(const char *path, MeasurePointStore *store)
 
         unsigned point_num, fix_quality, num_sats;
         long long ts;
-        int code_offset = 0;
-        /* Only the first 8 (fixed-format, comma-delimited) numeric
-         * columns are parsed via sscanf, with %n capturing the byte
-         * offset immediately after the 8th column's trailing comma.
-         * code is then taken as everything from that offset to the
-         * end of the line, trimmed of its trailing newline -- NOT
-         * matched via %s, which requires at least one non-whitespace
-         * character and therefore rejects the common case of an empty
-         * code field (the row this writes when no code was entered:
-         * "...,12,\n" -- nothing for %s to consume after the last
-         * comma, so n would come back 8 instead of 9 every time code
-         * is empty, the actual bug this replaced). */
-        int n = sscanf(line, "%u,%lld,%lf,%lf,%lf,%u,%lf,%u,%n",
+        int tail_offset = 0;
+        /* The first 10 (fixed-format, comma-delimited) numeric columns
+         * are parsed via sscanf, with %n capturing the byte offset
+         * immediately after the 10th column's trailing comma -- same
+         * "%n instead of %s for a free-form trailing field" technique
+         * the single-trailing-field version of this parser used
+         * (%s requires at least one non-whitespace character and so
+         * rejects an empty field; see this function's git history for
+         * the bug that caused). With TWO free-form trailing fields
+         * (name, code) now, the remainder of the line from tail_offset
+         * onward is "name,code" -- split on the comma between them.
+         * This split is safe specifically because the on-screen
+         * keyboard that produces both fields has a closed character
+         * set (letters, digits, '-', '_', space -- see
+         * ui/core/keyboard.h's file-level doc comment) that can never
+         * contain a comma, so the first comma found after tail_offset
+         * is unambiguously the name/code separator, not part of
+         * either field's own content. */
+        int n = sscanf(line, "%u,%lld,%lf,%lf,%lf,%lf,%lf,%u,%lf,%u,%n",
                       &point_num, &ts, &pt.lat, &pt.lon, &pt.alt,
-                      &fix_quality, &pt.hdop, &num_sats, &code_offset);
+                      &pt.raw_alt, &pt.target_height_m,
+                      &fix_quality, &pt.hdop, &num_sats, &tail_offset);
 
-        if (n != 8 || code_offset == 0) {
+        if (n != 10 || tail_offset == 0) {
             log_warn("measure_points_load_csv: '%s':%d: malformed row -- skipped",
                      path, lineno);
             continue;
         }
 
-        size_t code_len = strlen(line + code_offset);
-        while (code_len > 0 && (line[code_offset + (long)code_len - 1] == '\n'
-                                || line[code_offset + (long)code_len - 1] == '\r'))
+        const char *tail = line + tail_offset;
+        const char *sep = strchr(tail, ',');
+        if (!sep) {
+            log_warn("measure_points_load_csv: '%s':%d: missing name/code separator "
+                     "-- skipped", path, lineno);
+            continue;
+        }
+
+        size_t name_len = (size_t)(sep - tail);
+        if (name_len >= sizeof(pt.name))
+            name_len = sizeof(pt.name) - 1;
+        memcpy(pt.name, tail, name_len);
+        pt.name[name_len] = '\0';
+
+        const char *code_start = sep + 1;
+        size_t code_len = strlen(code_start);
+        while (code_len > 0 && (code_start[code_len - 1] == '\n'
+                                || code_start[code_len - 1] == '\r'))
             code_len--;
         if (code_len >= sizeof(pt.code))
             code_len = sizeof(pt.code) - 1;
-        memcpy(pt.code, line + code_offset, code_len);
+        memcpy(pt.code, code_start, code_len);
         pt.code[code_len] = '\0';
 
         pt.point_num   = point_num;
