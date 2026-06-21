@@ -13,7 +13,9 @@
 #include "../src/ui/screens/job_setup_screen.h"
 #include "../src/ui/screens/main_menu_screen.h"
 #include "../src/ui/screens/new_project_screen.h"
+#include "../src/ui/screens/open_job_screen.h"
 #include "../src/ui/screens/placeholder_screen.h"
+#include "../src/ui/screens/project_context.h"
 #include "../src/ui/screens/sleep_screen.h"
 
 /* =========================================================================
@@ -159,6 +161,9 @@ static void test_new_project_end_to_end(void)
     UiScreenStack stack;
     ui_stack_init(&stack);
 
+    ProjectContext project_ctx;
+    project_context_init(&project_ctx);
+
     PlaceholderScreenCtx job_setup_stub;
     PlaceholderScreenCtx continue_stub;
     PlaceholderScreenCtx stats_stub;
@@ -168,7 +173,8 @@ static void test_new_project_end_to_end(void)
 
     NewProjectScreenCtx new_project_ctx;
     new_project_screen_init(&new_project_ctx, &stack,
-                            placeholder_screen_as_ui_screen(&job_setup_stub));
+                            placeholder_screen_as_ui_screen(&job_setup_stub),
+                            &project_ctx);
 
     MainMenuScreenCtx menu_ctx;
     main_menu_screen_init(&menu_ctx, &stack,
@@ -232,6 +238,8 @@ static void test_new_project_end_to_end(void)
           "Create with a valid, new name reports no error status");
     ASSERT(ui_stack_top(&stack)->ctx == &job_setup_stub,
           "Create pushes the Job Setup stub on success");
+    ASSERT(strcmp(project_ctx.name, name) == 0,
+          "Create writes the project name into the shared ProjectContext");
 
     char expected_dir[600];
     snprintf(expected_dir, sizeof(expected_dir),
@@ -325,27 +333,35 @@ static void test_job_setup_and_create_end_to_end(void)
     UiScreenStack stack;
     ui_stack_init(&stack);
 
-    PlaceholderScreenCtx open_job_stub;
+    ProjectContext project_ctx;
+    project_context_init(&project_ctx);
+
     PlaceholderScreenCtx measure_points_stub;
     PlaceholderScreenCtx continue_stub;
     PlaceholderScreenCtx stats_stub;
-    placeholder_screen_init(&open_job_stub,       "Open Existing Job -- not built yet");
     placeholder_screen_init(&measure_points_stub, "Measure Points -- not built yet");
     placeholder_screen_init(&continue_stub,       "Continue Project -- not built yet");
     placeholder_screen_init(&stats_stub,          "Stats -- not built yet");
 
     JobCreateScreenCtx job_create_ctx;
     job_create_screen_init(&job_create_ctx, &stack,
-                           placeholder_screen_as_ui_screen(&measure_points_stub));
+                           placeholder_screen_as_ui_screen(&measure_points_stub),
+                           &project_ctx);
+
+    OpenJobScreenCtx open_job_ctx;
+    open_job_screen_init(&open_job_ctx, &stack,
+                         placeholder_screen_as_ui_screen(&measure_points_stub),
+                         &project_ctx);
 
     JobSetupScreenCtx job_setup_ctx;
     job_setup_screen_init(&job_setup_ctx, &stack,
                           job_create_screen_as_ui_screen(&job_create_ctx),
-                          placeholder_screen_as_ui_screen(&open_job_stub));
+                          open_job_screen_as_ui_screen(&open_job_ctx));
 
     NewProjectScreenCtx new_project_ctx;
     new_project_screen_init(&new_project_ctx, &stack,
-                            job_setup_screen_as_ui_screen(&job_setup_ctx));
+                            job_setup_screen_as_ui_screen(&job_setup_ctx),
+                            &project_ctx);
 
     MainMenuScreenCtx menu_ctx;
     main_menu_screen_init(&menu_ctx, &stack,
@@ -464,14 +480,15 @@ static void test_job_setup_and_create_end_to_end(void)
     ASSERT(ui_stack_top(&stack)->ctx == &measure_points_stub,
           "Create Job pushes the Measure Points stub on success");
 
-    /* Confirm job.ini actually exists on disk, under the
-     * JOB_CREATE_PLACEHOLDER_PROJECT seam documented in
-     * job_create_screen.c (jobs are not yet threaded under the actual
-     * project name created above -- that's a known, flagged gap, not
-     * something this test should silently paper over). */
+    /* Confirm job.ini actually exists on disk, under the real project
+     * name created above -- this is the seam fix: job_create_screen.c
+     * used to hardcode a "default-project" placeholder here (see this
+     * test's own prior history / job_create_screen.h's doc comment for
+     * what that gap was); ProjectContext now threads the actual project
+     * name through, so jobs land where they should. */
     char job_dir[600];
-    snprintf(job_dir, sizeof(job_dir), "%s/geomark-data/projects/default-project/%s",
-             tmp_home, job_name);
+    snprintf(job_dir, sizeof(job_dir), "%s/geomark-data/projects/%s/%s",
+             tmp_home, project_name, job_name);
     char ini_path[640];
     snprintf(ini_path, sizeof(ini_path), "%s/job.ini", job_dir);
 
@@ -494,26 +511,14 @@ static void test_job_setup_and_create_end_to_end(void)
     ASSERT(loaded.dist_unit == GM_DIST_UNIT_INTL_FOOT,
           "The loaded distance unit is International Foot -- the coercion held on disk");
 
-    /* Clean up the disposable HOME tree this test created. Unlike
-     * test_new_project_end_to_end's fixed three-level shape, this test
-     * creates two separate trees under tmp_home -- the project directory
-     * New Project made (tmp_home/geomark-data/projects/TESTPROJ) AND the
-     * job directory Job Create made under the unrelated placeholder
-     * project (tmp_home/geomark-data/projects/default-project/TESTJOB)
-     * -- both sharing the same geomark-data/projects parent. An earlier
-     * version of this test's cleanup only removed the job subtree and
-     * left the New-Project-created project directory (and therefore
-     * geomark-data/projects itself) behind, silently failing the final
-     * rmdir(tmp_home) below since a non-empty directory can't be
-     * removed; both subtrees are now removed before their shared
-     * parents. */
+    /* Clean up the disposable HOME tree this test created. Now that the
+     * job is threaded under the real project name (project_ctx, not a
+     * separate "default-project" placeholder), there is only one tree to
+     * remove: tmp_home/geomark-data/projects/TESTPROJ/TESTJOB. This is
+     * simpler than this test's prior shape, which had to clean up two
+     * independent subtrees under the shared geomark-data/projects parent. */
     unlink(ini_path);
     rmdir(job_dir);
-
-    char default_project_dir[560];
-    snprintf(default_project_dir, sizeof(default_project_dir),
-             "%s/geomark-data/projects/default-project", tmp_home);
-    rmdir(default_project_dir);
 
     char testproj_dir[560];
     snprintf(testproj_dir, sizeof(testproj_dir),
@@ -540,6 +545,289 @@ static void test_job_setup_and_create_end_to_end(void)
 }
 
 /* =========================================================================
+ * End-to-end: Open Existing Job. Builds on the same flow as
+ * test_job_setup_and_create_end_to_end (Sleep -> Main Menu -> New Project
+ * -> Job Setup -> Create New Job) to get one real job.ini onto disk under
+ * the real project name, then backs out to Job Setup and drives "Open
+ * Existing Job" instead -- confirming the list is populated by an actual
+ * directory scan (not a fixture), selecting the job loads its job.ini
+ * back into OpenJobScreenCtx, and the screen pushes Measure Points on
+ * success, mirroring Job Create's own success path.
+ * ========================================================================= */
+
+static void test_open_job_end_to_end(void)
+{
+    char tmpl[] = "/tmp/geomark_test_home_XXXXXX";
+    char *tmp_home = mkdtemp(tmpl);
+    ASSERT(tmp_home != NULL, "mkdtemp created a disposable HOME for this test");
+
+    const char *real_home = getenv("HOME");
+    char real_home_buf[512] = {0};
+    if (real_home) strncpy(real_home_buf, real_home, sizeof(real_home_buf) - 1);
+    setenv("HOME", tmp_home, 1);
+
+    UiScreenStack stack;
+    ui_stack_init(&stack);
+
+    ProjectContext project_ctx;
+    project_context_init(&project_ctx);
+
+    PlaceholderScreenCtx measure_points_stub;
+    PlaceholderScreenCtx continue_stub;
+    PlaceholderScreenCtx stats_stub;
+    placeholder_screen_init(&measure_points_stub, "Measure Points -- not built yet");
+    placeholder_screen_init(&continue_stub,       "Continue Project -- not built yet");
+    placeholder_screen_init(&stats_stub,          "Stats -- not built yet");
+
+    JobCreateScreenCtx job_create_ctx;
+    job_create_screen_init(&job_create_ctx, &stack,
+                           placeholder_screen_as_ui_screen(&measure_points_stub),
+                           &project_ctx);
+
+    OpenJobScreenCtx open_job_ctx;
+    open_job_screen_init(&open_job_ctx, &stack,
+                         placeholder_screen_as_ui_screen(&measure_points_stub),
+                         &project_ctx);
+
+    JobSetupScreenCtx job_setup_ctx;
+    job_setup_screen_init(&job_setup_ctx, &stack,
+                          job_create_screen_as_ui_screen(&job_create_ctx),
+                          open_job_screen_as_ui_screen(&open_job_ctx));
+
+    NewProjectScreenCtx new_project_ctx;
+    new_project_screen_init(&new_project_ctx, &stack,
+                            job_setup_screen_as_ui_screen(&job_setup_ctx),
+                            &project_ctx);
+
+    MainMenuScreenCtx menu_ctx;
+    main_menu_screen_init(&menu_ctx, &stack,
+                          new_project_screen_as_ui_screen(&new_project_ctx),
+                          placeholder_screen_as_ui_screen(&continue_stub),
+                          placeholder_screen_as_ui_screen(&stats_stub));
+
+    SleepScreenCtx sleep_ctx;
+    sleep_screen_init(&sleep_ctx, &stack, main_menu_screen_as_ui_screen(&menu_ctx));
+    ui_stack_push(&stack, sleep_screen_as_ui_screen(&sleep_ctx));
+
+    UiEvent nav_down = { .type = UI_EVENT_NAV_DOWN };
+    UiEvent activate  = { .type = UI_EVENT_ACTIVATE };
+    UiEvent back      = { .type = UI_EVENT_BACK };
+    ui_stack_dispatch_event(&stack, nav_down); /* Sleep -> Main Menu      */
+    ui_stack_dispatch_event(&stack, activate); /* Start New Project       */
+
+    /* Create a project, same per-letter pattern as the other end-to-end
+     * tests above. */
+    const char *project_name = "TESTPROJ";
+    for (const char *p = project_name; *p; p++) {
+        UiWidget *key = NULL;
+        for (uint32_t i = 0; i < new_project_ctx.grid.count; i++) {
+            UiWidget *w = &new_project_ctx.grid.widgets[i];
+            if (w->kind == WIDGET_BUTTON && w->label && w->label[0] == *p
+                && w->label[1] == '\0') {
+                key = w;
+                break;
+            }
+        }
+        ASSERT(key != NULL, "Each letter of the test project name has a matching key");
+        if (key) activate_widget_directly(&new_project_ctx.grid, key);
+    }
+    UiWidget *create_project_btn =
+        find_widget(&new_project_ctx.grid, WIDGET_BUTTON, "Create Project");
+    ASSERT(create_project_btn != NULL, "Create Project button exists");
+    if (create_project_btn)
+        activate_widget_directly(&new_project_ctx.grid, create_project_btn);
+
+    ASSERT(ui_stack_top(&stack)->ctx == &job_setup_ctx,
+          "Create Project pushes Job Setup");
+
+    /* Create a job under that project. */
+    UiWidget *create_new_job_btn =
+        find_widget(&job_setup_ctx.grid, WIDGET_BUTTON, "Create New Job");
+    ASSERT(create_new_job_btn != NULL, "Create New Job button exists on Job Setup");
+    if (create_new_job_btn)
+        activate_widget_directly(&job_setup_ctx.grid, create_new_job_btn);
+
+    ASSERT(ui_stack_top(&stack)->ctx == &job_create_ctx,
+          "Create New Job pushes Job Create");
+
+    const char *job_name = "TESTJOB";
+    UiWidget *job_name_field =
+        find_widget(&job_create_ctx.grid, WIDGET_TEXT_FIELD, "Job Name");
+    ASSERT(job_name_field != NULL, "Job Name text field exists on Job Create");
+    if (job_name_field)
+        activate_widget_directly(&job_create_ctx.grid, job_name_field);
+
+    for (const char *p = job_name; *p; p++) {
+        UiWidget *key = find_widget(&job_create_ctx.grid, WIDGET_BUTTON,
+                                    (char[]){ *p, '\0' });
+        ASSERT(key != NULL, "Each letter of the test job name has a matching key");
+        if (key) activate_widget_directly(&job_create_ctx.grid, key);
+    }
+
+    UiWidget *create_job_btn =
+        find_widget(&job_create_ctx.grid, WIDGET_BUTTON, "Create Job");
+    ASSERT(create_job_btn != NULL, "Create Job button exists");
+    if (create_job_btn)
+        activate_widget_directly(&job_create_ctx.grid, create_job_btn);
+
+    ASSERT(ui_stack_top(&stack)->ctx == &measure_points_stub,
+          "Create Job pushes Measure Points -- job.ini is now on disk");
+
+    /* Back out of Job Create and Measure Points isn't pushed again --
+     * BACK is unconsumed by the placeholder, popping to Job Create, then
+     * BACK again pops Job Create back to Job Setup (both screens'
+     * on_event return false for UI_EVENT_BACK, see job_create_screen.c /
+     * job_setup_screen.c, so the stack's default pop policy handles both
+     * hops). */
+    ui_stack_dispatch_event(&stack, back); /* Measure Points stub -> Job Create */
+    ui_stack_dispatch_event(&stack, back); /* Job Create -> Job Setup           */
+    ASSERT(ui_stack_top(&stack)->ctx == &job_setup_ctx,
+          "Two BACKs return to Job Setup after creating a job");
+
+    /* Now drive "Open Existing Job" instead. */
+    UiWidget *open_job_btn =
+        find_widget(&job_setup_ctx.grid, WIDGET_BUTTON, "Open Existing Job");
+    ASSERT(open_job_btn != NULL, "Open Existing Job button exists on Job Setup");
+    if (open_job_btn)
+        activate_widget_directly(&job_setup_ctx.grid, open_job_btn);
+
+    ASSERT(ui_stack_top(&stack)->ctx == &open_job_ctx,
+          "Open Existing Job pushes the real Open Job screen, not a placeholder");
+
+    /* on_enter (fired by ui_stack_push above) must have scanned the
+     * project directory and found exactly the one job just created --
+     * this is the actual proof the directory-scan code works, not a
+     * fixture standing in for it. */
+    ASSERT(open_job_ctx.status == OPEN_JOB_STATUS_NONE,
+          "A project with exactly one job reports no error status");
+    ASSERT(open_job_ctx.job_count == 1, "The scan found exactly the one job that was created");
+    ASSERT(strcmp(open_job_ctx.job_names[0], job_name) == 0,
+          "The discovered job's name matches what was typed during Create");
+
+    UiWidget *job_btn = find_widget(&open_job_ctx.grid, WIDGET_BUTTON, job_name);
+    ASSERT(job_btn != NULL, "A button for the discovered job exists in the grid");
+    if (job_btn)
+        activate_widget_directly(&open_job_ctx.grid, job_btn);
+
+    ASSERT(open_job_ctx.status == OPEN_JOB_STATUS_NONE,
+          "Selecting the job reports no error status");
+    ASSERT(ui_stack_top(&stack)->ctx == &measure_points_stub,
+          "Selecting a job pushes Measure Points, same destination Job Create uses");
+    ASSERT(strcmp(open_job_ctx.loaded_meta.job_name, job_name) == 0,
+          "The loaded job metadata's name matches the job that was selected");
+    ASSERT(open_job_ctx.loaded_meta.coord_sys == GM_COORD_SYS_WGS84,
+          "The loaded job metadata's coord_sys matches what Job Create wrote "
+          "(WGS84 default -- this test never cycled the dropdown)");
+
+    /* Clean up -- same single-tree shape as
+     * test_job_setup_and_create_end_to_end now that there's no separate
+     * default-project subtree. */
+    char job_dir[600];
+    snprintf(job_dir, sizeof(job_dir), "%s/geomark-data/projects/%s/%s",
+             tmp_home, project_name, job_name);
+    char ini_path[640];
+    snprintf(ini_path, sizeof(ini_path), "%s/job.ini", job_dir);
+    unlink(ini_path);
+    rmdir(job_dir);
+
+    char testproj_dir[560];
+    snprintf(testproj_dir, sizeof(testproj_dir),
+             "%s/geomark-data/projects/%s", tmp_home, project_name);
+    rmdir(testproj_dir);
+
+    char projects_dir[540];
+    snprintf(projects_dir, sizeof(projects_dir), "%s/geomark-data/projects", tmp_home);
+    rmdir(projects_dir);
+
+    char data_dir[520];
+    snprintf(data_dir, sizeof(data_dir), "%s/geomark-data", tmp_home);
+    rmdir(data_dir);
+
+    rmdir(tmp_home);
+
+    if (real_home_buf[0])
+        setenv("HOME", real_home_buf, 1);
+    else
+        unsetenv("HOME");
+}
+
+/* =========================================================================
+ * Open Existing Job: no-project and no-jobs status cases, without going
+ * through the full New Project / Job Create flow -- exercises
+ * scan_jobs()'s two early-out paths directly via a fresh
+ * OpenJobScreenCtx and its own disposable HOME.
+ * ========================================================================= */
+
+static void test_open_job_status_cases(void)
+{
+    char tmpl[] = "/tmp/geomark_test_home_XXXXXX";
+    char *tmp_home = mkdtemp(tmpl);
+    ASSERT(tmp_home != NULL, "mkdtemp created a disposable HOME for this test");
+
+    const char *real_home = getenv("HOME");
+    char real_home_buf[512] = {0};
+    if (real_home) strncpy(real_home_buf, real_home, sizeof(real_home_buf) - 1);
+    setenv("HOME", tmp_home, 1);
+
+    UiScreenStack stack;
+    ui_stack_init(&stack);
+
+    PlaceholderScreenCtx measure_points_stub;
+    placeholder_screen_init(&measure_points_stub, "Measure Points -- not built yet");
+
+    /* Case 1: no project set at all. */
+    ProjectContext empty_ctx;
+    project_context_init(&empty_ctx);
+
+    OpenJobScreenCtx no_project_ctx;
+    open_job_screen_init(&no_project_ctx, &stack,
+                         placeholder_screen_as_ui_screen(&measure_points_stub),
+                         &empty_ctx);
+    ui_stack_push(&stack, open_job_screen_as_ui_screen(&no_project_ctx));
+
+    ASSERT(no_project_ctx.status == OPEN_JOB_STATUS_NO_PROJECT,
+          "With no project set, Open Job reports OPEN_JOB_STATUS_NO_PROJECT");
+    ASSERT(no_project_ctx.job_count == 0,
+          "With no project set, the job list is empty");
+    ui_stack_pop(&stack);
+
+    /* Case 2: a project exists but has zero job subdirectories. */
+    ProjectContext empty_project_ctx;
+    project_context_init(&empty_project_ctx);
+    project_context_set(&empty_project_ctx, "EMPTYPROJ");
+
+    char base[300], projects[330], project[400];
+    snprintf(base,     sizeof(base),     "%s/geomark-data", tmp_home);
+    snprintf(projects, sizeof(projects), "%s/projects", base);
+    snprintf(project,  sizeof(project),  "%s/EMPTYPROJ", projects);
+    mkdir(base, 0755);
+    mkdir(projects, 0755);
+    mkdir(project, 0755);
+
+    OpenJobScreenCtx no_jobs_ctx;
+    open_job_screen_init(&no_jobs_ctx, &stack,
+                         placeholder_screen_as_ui_screen(&measure_points_stub),
+                         &empty_project_ctx);
+    ui_stack_push(&stack, open_job_screen_as_ui_screen(&no_jobs_ctx));
+
+    ASSERT(no_jobs_ctx.status == OPEN_JOB_STATUS_NO_JOBS,
+          "An existing project with zero jobs reports OPEN_JOB_STATUS_NO_JOBS");
+    ASSERT(no_jobs_ctx.job_count == 0,
+          "An existing project with zero jobs has an empty job list");
+    ui_stack_pop(&stack);
+
+    rmdir(project);
+    rmdir(projects);
+    rmdir(base);
+    rmdir(tmp_home);
+
+    if (real_home_buf[0])
+        setenv("HOME", real_home_buf, 1);
+    else
+        unsetenv("HOME");
+}
+
+/* =========================================================================
  * main
  * ========================================================================= */
 int main(void)
@@ -548,6 +836,8 @@ int main(void)
     test_placeholder_always_unconsumed();
     test_new_project_end_to_end();
     test_job_setup_and_create_end_to_end();
+    test_open_job_end_to_end();
+    test_open_job_status_cases();
 
     if (g_tests_failed == 0) {
         printf("All %d screen tests passed.\n", g_tests_run);

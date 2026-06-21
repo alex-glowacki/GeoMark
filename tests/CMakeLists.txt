@@ -97,8 +97,11 @@ add_executable(test_screens
     ${PROJECT_SOURCE_DIR}/src/ui/screens/job_setup_screen_draw.c
     ${PROJECT_SOURCE_DIR}/src/ui/screens/job_create_screen.c
     ${PROJECT_SOURCE_DIR}/src/ui/screens/job_create_screen_draw.c
+    ${PROJECT_SOURCE_DIR}/src/ui/screens/open_job_screen.c
+    ${PROJECT_SOURCE_DIR}/src/ui/screens/open_job_screen_draw.c
     ${PROJECT_SOURCE_DIR}/src/ui/screens/placeholder_screen.c
     ${PROJECT_SOURCE_DIR}/src/ui/screens/placeholder_screen_draw.c
+    ${PROJECT_SOURCE_DIR}/src/ui/screens/project_context.c
     ${PROJECT_SOURCE_DIR}/src/collector/job_metadata.c
     ${PROJECT_SOURCE_DIR}/src/ui/tft/display.c
     ${PROJECT_SOURCE_DIR}/src/util/log.c
