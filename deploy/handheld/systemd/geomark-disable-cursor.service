@@ -1,0 +1,13 @@
+[Unit]
+Description=Disable blinking console cursor on tty1 (DSI panel console)
+DefaultDependencies=no
+After=systemd-vconsole-setup.service
+Before=getty@tty1.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/setterm -cursor off -term linux </dev/tty1 >/dev/tty1
+RemainAfterExit=yes
+
+[Install]
+WantedBy=sysinit.target
