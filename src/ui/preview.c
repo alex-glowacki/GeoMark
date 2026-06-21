@@ -18,9 +18,11 @@
 #include "ui/gpio_button.h"
 #include "ui/input.h"
 #include "ui/screens/continue_project_screen.h"
+#include "ui/screens/job_context.h"
 #include "ui/screens/job_create_screen.h"
 #include "ui/screens/job_setup_screen.h"
 #include "ui/screens/main_menu_screen.h"
+#include "ui/screens/measure_points_screen.h"
 #include "ui/screens/new_project_screen.h"
 #include "ui/screens/open_job_screen.h"
 #include "ui/screens/placeholder_screen.h"
@@ -108,20 +110,24 @@ gm_status_t ui_preview_run(void)
     ProjectContext project_ctx;
     project_context_init(&project_ctx);
 
-    PlaceholderScreenCtx measure_points_stub;
+    JobContext job_ctx;
+    job_context_init(&job_ctx);
+
     PlaceholderScreenCtx stats_stub;
-    placeholder_screen_init(&measure_points_stub, "Measure Points -- not built yet");
-    placeholder_screen_init(&stats_stub,          "Stats -- not built yet");
+    placeholder_screen_init(&stats_stub, "Stats -- not built yet");
+
+    MeasurePointsScreenCtx measure_points_ctx;
+    measure_points_screen_init(&measure_points_ctx, &stack, &job_ctx, measure_points_no_feed());
 
     JobCreateScreenCtx job_create_ctx;
     job_create_screen_init(&job_create_ctx, &stack,
-                           placeholder_screen_as_ui_screen(&measure_points_stub),
-                           &project_ctx);
+                           measure_points_screen_as_ui_screen(&measure_points_ctx),
+                           &project_ctx, &job_ctx);
 
     OpenJobScreenCtx open_job_ctx;
     open_job_screen_init(&open_job_ctx, &stack,
-                         placeholder_screen_as_ui_screen(&measure_points_stub),
-                         &project_ctx);
+                         measure_points_screen_as_ui_screen(&measure_points_ctx),
+                         &project_ctx, &job_ctx);
 
     JobSetupScreenCtx job_setup_ctx;
     job_setup_screen_init(&job_setup_ctx, &stack,

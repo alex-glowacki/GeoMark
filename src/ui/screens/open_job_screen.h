@@ -42,6 +42,7 @@
 #include "collector/job_metadata.h"
 #include "ui/core/screen_stack.h"
 #include "ui/core/widget.h"
+#include "ui/screens/job_context.h"
 #include "ui/screens/project_context.h"
 
 /**
@@ -66,6 +67,10 @@ typedef struct {
     UiScreenStack *stack;              /* not owned */
     UiScreen measure_points_screen;    /* pushed after a successful job load */
     const ProjectContext *project_ctx; /* not owned; read-only here */
+    JobContext *job_ctx;               /* not owned; written on a successful job
+                                        * load -- see job_context.h for why
+                                        * Measure Points needs this set before
+                                        * it's pushed */
 
     /* Job names discovered by the most recent on_enter scan, owned by
      * this struct (fixed-size, no heap) -- each ui_grid_add_button() call
@@ -82,10 +87,14 @@ typedef struct {
 
 /**
  * project_ctx is not owned and must outlive this screen -- supplies which
- * project's jobs to list (see project_context.h).
+ * project's jobs to list (see project_context.h). job_ctx is not owned
+ * and must outlive this screen -- on a successful job load, this screen
+ * writes the selected job's name/directory into it (see job_context.h)
+ * so Measure Points knows which job it was pushed for.
  */
 void open_job_screen_init(OpenJobScreenCtx *ctx, UiScreenStack *stack,
-                          UiScreen measure_points_screen, const ProjectContext *project_ctx);
+                          UiScreen measure_points_screen, const ProjectContext *project_ctx,
+                          JobContext *job_ctx);
 
 /** Render implementation — open_job_screen_draw.c (depends on ui/tft/display.h). */
 void open_job_screen_render(void *ctx);

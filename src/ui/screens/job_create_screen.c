@@ -290,6 +290,13 @@ static void on_create(UiWidget *self, void *screen_ctx)
     }
 
     log_info("job_create: created job '%s' at %s", ctx->meta.job_name, job_dir);
+
+    if (ctx->job_ctx) {
+        const char *home = getenv("HOME");
+        if (home && home[0] != '\0')
+            job_context_set(ctx->job_ctx, home, ctx->project_ctx->name, ctx->meta.job_name);
+    }
+
     ctx->status = JOB_CREATE_STATUS_NONE;
     ui_stack_push(ctx->stack, ctx->measure_points_screen);
 }
@@ -308,12 +315,14 @@ static void on_keyboard_done(void *screen_ctx)
  * ---------------------------------------------------------------------- */
 
 void job_create_screen_init(JobCreateScreenCtx *ctx, UiScreenStack *stack,
-                            UiScreen measure_points_screen, ProjectContext *project_ctx)
+                            UiScreen measure_points_screen, ProjectContext *project_ctx,
+                            JobContext *job_ctx)
 {
     memset(ctx, 0, sizeof(*ctx));
     ctx->stack                  = stack;
     ctx->measure_points_screen  = measure_points_screen;
     ctx->project_ctx            = project_ctx;
+    ctx->job_ctx                = job_ctx;
 
     job_metadata_defaults(&ctx->meta);
 

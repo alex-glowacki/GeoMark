@@ -129,6 +129,10 @@ static void on_job_selected(UiWidget *self, void *screen_ctx)
     }
 
     log_info("open_job: opened job '%s'", job_name);
+
+    if (ctx->job_ctx)
+        job_context_set(ctx->job_ctx, home, ctx->project_ctx->name, job_name);
+
     ctx->status = OPEN_JOB_STATUS_NONE;
     ui_stack_push(ctx->stack, ctx->measure_points_screen);
 }
@@ -138,12 +142,14 @@ static void on_job_selected(UiWidget *self, void *screen_ctx)
  * ---------------------------------------------------------------------- */
 
 void open_job_screen_init(OpenJobScreenCtx *ctx, UiScreenStack *stack,
-                          UiScreen measure_points_screen, const ProjectContext *project_ctx)
+                          UiScreen measure_points_screen, const ProjectContext *project_ctx,
+                          JobContext *job_ctx)
 {
     memset(ctx, 0, sizeof(*ctx));
     ctx->stack                 = stack;
     ctx->measure_points_screen = measure_points_screen;
     ctx->project_ctx           = project_ctx;
+    ctx->job_ctx                = job_ctx;
 
     ui_grid_init(&ctx->grid, ctx);
     ui_grid_set_scroll_region(&ctx->grid,

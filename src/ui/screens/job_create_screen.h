@@ -20,9 +20,10 @@
  * is a real correctness error, not a style preference.
  *
  * On Create: writes job.ini via job_metadata_save() under
- * ~/geomark-data/projects/<project>/<job>/ and pushes the caller-supplied
- * measure_points_screen (today a PlaceholderScreenCtx stub -- Measure
- * Points is not built yet). <project> comes from the caller-supplied
+ * ~/geomark-data/projects/<project>/<job>/, records the new job in the
+ * caller-supplied JobContext (job_context.h) so Measure Points knows
+ * which job it was pushed for, then pushes the caller-supplied
+ * measure_points_screen. <project> comes from the caller-supplied
  * ProjectContext (see project_context.h) -- the actual project name New
  * Project created, not a hardcoded placeholder (see this header's
  * history for the JOB_CREATE_PLACEHOLDER_PROJECT seam this replaced). If
@@ -40,6 +41,7 @@
 #include "ui/core/keyboard.h"
 #include "ui/core/screen_stack.h"
 #include "ui/core/widget.h"
+#include "ui/screens/job_context.h"
 #include "ui/screens/project_context.h"
 
 typedef enum {
@@ -78,6 +80,10 @@ typedef struct {
     UiScreenStack *stack;           /* not owned */
     UiScreen measure_points_screen; /* pushed by Create on success */
     ProjectContext *project_ctx;    /* not owned; read-only here */
+    JobContext *job_ctx;            /* not owned; written on successful Create
+                                     * -- see job_context.h for why Measure
+                                     * Points needs this set before it's
+                                     * pushed */
 
     gm_job_metadata_t meta;
 
@@ -111,9 +117,13 @@ typedef struct {
 /**
  * project_ctx is not owned and must outlive this screen -- it supplies
  * the actual project name jobs are created under (see project_context.h).
+ * job_ctx is not owned and must outlive this screen -- on a successful
+ * Create, this screen writes the new job's name/directory into it (see
+ * job_context.h) so Measure Points knows which job it was pushed for.
  */
 void job_create_screen_init(JobCreateScreenCtx *ctx, UiScreenStack *stack,
-                            UiScreen measure_points_screen, ProjectContext *project_ctx);
+                            UiScreen measure_points_screen, ProjectContext *project_ctx,
+                            JobContext *job_ctx);
 
 /** Render implementation — job_create_screen_draw.c (depends on ui/tft/display.h). */
 void job_create_screen_render(void *ctx);
