@@ -73,14 +73,18 @@ target_include_directories(test_keyboard PRIVATE
 )
 add_test(NAME test_keyboard COMMAND test_keyboard)
 
-# test_screens: Sleep + Main Menu + New Project + Job Setup + Job Create +
+# test_screens: Sleep + Main Menu + New Project + Continue Project +
+# Job Setup + Job Create + Open Existing Job + Measure Points +
 # Placeholder screens, end to end through the screen stack. Links
 # ui/tft/display.c because the screens' on_render functions take
 # display_* function addresses when building their UiScreen vtables, so
 # the symbols must resolve at link time even though the test never calls
 # display_open() and never invokes on_render. Matches the existing
 # test_collector convention of linking hardware-touching modules without
-# exercising their actual I/O.
+# exercising their actual I/O. Also links collector/coords.c and libm
+# (target_link_libraries below) since measure_points.c calls
+# coords_wgs84_to_nd_north() for ND North job projection and cos() for
+# the local-fallback projection.
 add_executable(test_screens
     ${PROJECT_SOURCE_DIR}/tests/test_screens.c
     ${PROJECT_SOURCE_DIR}/src/ui/core/widget.c
@@ -101,10 +105,15 @@ add_executable(test_screens
     ${PROJECT_SOURCE_DIR}/src/ui/screens/job_create_screen_draw.c
     ${PROJECT_SOURCE_DIR}/src/ui/screens/open_job_screen.c
     ${PROJECT_SOURCE_DIR}/src/ui/screens/open_job_screen_draw.c
+    ${PROJECT_SOURCE_DIR}/src/ui/screens/measure_points_screen.c
+    ${PROJECT_SOURCE_DIR}/src/ui/screens/measure_points_screen_draw.c
     ${PROJECT_SOURCE_DIR}/src/ui/screens/placeholder_screen.c
     ${PROJECT_SOURCE_DIR}/src/ui/screens/placeholder_screen_draw.c
     ${PROJECT_SOURCE_DIR}/src/ui/screens/project_context.c
+    ${PROJECT_SOURCE_DIR}/src/ui/screens/job_context.c
     ${PROJECT_SOURCE_DIR}/src/collector/job_metadata.c
+    ${PROJECT_SOURCE_DIR}/src/collector/measure_points.c
+    ${PROJECT_SOURCE_DIR}/src/collector/coords.c
     ${PROJECT_SOURCE_DIR}/src/ui/tft/display.c
     ${PROJECT_SOURCE_DIR}/src/util/log.c
 )
@@ -112,6 +121,7 @@ target_include_directories(test_screens PRIVATE
     ${PROJECT_SOURCE_DIR}/include
     ${PROJECT_SOURCE_DIR}/src
 )
+target_link_libraries(test_screens PRIVATE m)
 add_test(NAME test_screens COMMAND test_screens)
 
 # test_coords: WGS84 -> NAD83 North Dakota State Plane North Zone (Lambert
