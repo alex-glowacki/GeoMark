@@ -63,8 +63,11 @@ set(GEOMARK_SOURCES
     src/ui/screens/job_setup_screen_draw.c
     src/ui/screens/job_create_screen.c
     src/ui/screens/job_create_screen_draw.c
+    src/ui/screens/open_job_screen.c
+    src/ui/screens/open_job_screen_draw.c
     src/ui/screens/placeholder_screen.c
     src/ui/screens/placeholder_screen_draw.c
+    src/ui/screens/project_context.c
     src/util/config.c
     src/util/log.c
     src/util/thread.c

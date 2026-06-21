@@ -117,6 +117,8 @@ static void on_create(UiWidget *self, void *screen_ctx)
 
     log_info("new_project: created project '%s'", ctx->name_buf);
     ctx->status = NEW_PROJECT_STATUS_NONE;
+    if (ctx->project_ctx)
+        project_context_set(ctx->project_ctx, ctx->name_buf);
     ui_stack_push(ctx->stack, ctx->job_setup_screen);
 }
 
@@ -144,11 +146,12 @@ static void on_keyboard_done(void *screen_ctx)
  * ---------------------------------------------------------------------- */
 
 void new_project_screen_init(NewProjectScreenCtx *ctx, UiScreenStack *stack,
-                             UiScreen job_setup_screen)
+                             UiScreen job_setup_screen, ProjectContext *project_ctx)
 {
     memset(ctx, 0, sizeof(*ctx));
     ctx->stack             = stack;
     ctx->job_setup_screen  = job_setup_screen;
+    ctx->project_ctx       = project_ctx;
 
     /* kb (UiKeyboardTarget) is first in the struct -- see the header's
      * doc comment. Point it at this screen's own name buffer up front;

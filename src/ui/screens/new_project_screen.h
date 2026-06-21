@@ -16,6 +16,13 @@
  * Project" button (see ui/preview.c, which wires the real screen in where
  * a PlaceholderScreenCtx stub used to sit). Create pushes Job Setup --
  * the real job_setup_screen as of this session.
+ *
+ * On a successful Create, this screen also writes the project name into
+ * the caller-supplied ProjectContext (see project_context.h) -- this is
+ * what lets Job Create and Open Existing Job create/list jobs under the
+ * actual project just created instead of a hardcoded placeholder. See
+ * job_create_screen.c's historical JOB_CREATE_PLACEHOLDER_PROJECT comment
+ * for the gap this closes.
  */
 
 #ifndef GEOMARK_UI_SCREENS_NEW_PROJECT_SCREEN_H
@@ -24,6 +31,7 @@
 #include "ui/core/keyboard.h"
 #include "ui/core/screen_stack.h"
 #include "ui/core/widget.h"
+#include "ui/screens/project_context.h"
 
 #define NEW_PROJECT_NAME_MAX 32
 
@@ -47,8 +55,9 @@ typedef struct {
     UiWidgetGrid grid;
     UiKeyboardLabels kb_labels;
 
-    UiScreenStack *stack;      /* not owned */
-    UiScreen job_setup_screen; /* pushed by Create on success */
+    UiScreenStack *stack;        /* not owned */
+    UiScreen job_setup_screen;   /* pushed by Create on success */
+    ProjectContext *project_ctx; /* not owned; set on Create success */
 
     char name_buf[NEW_PROJECT_NAME_MAX];
     size_t name_len;
@@ -69,10 +78,12 @@ typedef struct {
 /**
  * job_setup_screen is caller-supplied, same convention
  * main_menu_screen_init() already uses for its own not-yet-built
- * destinations -- today it's the real job_setup_screen.
+ * destinations -- today it's the real job_setup_screen. project_ctx is
+ * not owned and must outlive this screen; it is written to (via
+ * project_context_set()) only on a successful Create.
  */
 void new_project_screen_init(NewProjectScreenCtx *ctx, UiScreenStack *stack,
-                             UiScreen job_setup_screen);
+                             UiScreen job_setup_screen, ProjectContext *project_ctx);
 
 /** Render implementation — new_project_screen_draw.c (depends on ui/tft/display.h). */
 void new_project_screen_render(void *ctx);
