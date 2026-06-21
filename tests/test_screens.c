@@ -6,13 +6,16 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <math.h>
 
 #include "../src/collector/job_metadata.h"
 #include "../src/ui/core/screen_stack.h"
 #include "../src/ui/screens/continue_project_screen.h"
+#include "../src/ui/screens/job_context.h"
 #include "../src/ui/screens/job_create_screen.h"
 #include "../src/ui/screens/job_setup_screen.h"
 #include "../src/ui/screens/main_menu_screen.h"
+#include "../src/ui/screens/measure_points_screen.h"
 #include "../src/ui/screens/new_project_screen.h"
 #include "../src/ui/screens/open_job_screen.h"
 #include "../src/ui/screens/placeholder_screen.h"
@@ -337,6 +340,9 @@ static void test_job_setup_and_create_end_to_end(void)
     ProjectContext project_ctx;
     project_context_init(&project_ctx);
 
+    JobContext job_ctx;
+    job_context_init(&job_ctx);
+
     PlaceholderScreenCtx measure_points_stub;
     PlaceholderScreenCtx continue_stub;
     PlaceholderScreenCtx stats_stub;
@@ -347,12 +353,12 @@ static void test_job_setup_and_create_end_to_end(void)
     JobCreateScreenCtx job_create_ctx;
     job_create_screen_init(&job_create_ctx, &stack,
                            placeholder_screen_as_ui_screen(&measure_points_stub),
-                           &project_ctx);
+                           &project_ctx, &job_ctx);
 
     OpenJobScreenCtx open_job_ctx;
     open_job_screen_init(&open_job_ctx, &stack,
                          placeholder_screen_as_ui_screen(&measure_points_stub),
-                         &project_ctx);
+                         &project_ctx, &job_ctx);
 
     JobSetupScreenCtx job_setup_ctx;
     job_setup_screen_init(&job_setup_ctx, &stack,
@@ -573,6 +579,9 @@ static void test_open_job_end_to_end(void)
     ProjectContext project_ctx;
     project_context_init(&project_ctx);
 
+    JobContext job_ctx;
+    job_context_init(&job_ctx);
+
     PlaceholderScreenCtx measure_points_stub;
     PlaceholderScreenCtx continue_stub;
     PlaceholderScreenCtx stats_stub;
@@ -583,12 +592,12 @@ static void test_open_job_end_to_end(void)
     JobCreateScreenCtx job_create_ctx;
     job_create_screen_init(&job_create_ctx, &stack,
                            placeholder_screen_as_ui_screen(&measure_points_stub),
-                           &project_ctx);
+                           &project_ctx, &job_ctx);
 
     OpenJobScreenCtx open_job_ctx;
     open_job_screen_init(&open_job_ctx, &stack,
                          placeholder_screen_as_ui_screen(&measure_points_stub),
-                         &project_ctx);
+                         &project_ctx, &job_ctx);
 
     JobSetupScreenCtx job_setup_ctx;
     job_setup_screen_init(&job_setup_ctx, &stack,
@@ -773,6 +782,9 @@ static void test_open_job_status_cases(void)
     UiScreenStack stack;
     ui_stack_init(&stack);
 
+    JobContext job_ctx;
+    job_context_init(&job_ctx);
+
     PlaceholderScreenCtx measure_points_stub;
     placeholder_screen_init(&measure_points_stub, "Measure Points -- not built yet");
 
@@ -783,7 +795,7 @@ static void test_open_job_status_cases(void)
     OpenJobScreenCtx no_project_ctx;
     open_job_screen_init(&no_project_ctx, &stack,
                          placeholder_screen_as_ui_screen(&measure_points_stub),
-                         &empty_ctx);
+                         &empty_ctx, &job_ctx);
     ui_stack_push(&stack, open_job_screen_as_ui_screen(&no_project_ctx));
 
     ASSERT(no_project_ctx.status == OPEN_JOB_STATUS_NO_PROJECT,
@@ -808,7 +820,7 @@ static void test_open_job_status_cases(void)
     OpenJobScreenCtx no_jobs_ctx;
     open_job_screen_init(&no_jobs_ctx, &stack,
                          placeholder_screen_as_ui_screen(&measure_points_stub),
-                         &empty_project_ctx);
+                         &empty_project_ctx, &job_ctx);
     ui_stack_push(&stack, open_job_screen_as_ui_screen(&no_jobs_ctx));
 
     ASSERT(no_jobs_ctx.status == OPEN_JOB_STATUS_NO_JOBS,
@@ -866,6 +878,9 @@ static void test_continue_project_end_to_end(void)
         ProjectContext project_ctx;
         project_context_init(&project_ctx);
 
+        JobContext job_ctx;
+        job_context_init(&job_ctx);
+
         PlaceholderScreenCtx measure_points_stub;
         PlaceholderScreenCtx stats_stub;
         placeholder_screen_init(&measure_points_stub, "Measure Points -- not built yet");
@@ -874,12 +889,12 @@ static void test_continue_project_end_to_end(void)
         JobCreateScreenCtx job_create_ctx;
         job_create_screen_init(&job_create_ctx, &stack,
                                placeholder_screen_as_ui_screen(&measure_points_stub),
-                               &project_ctx);
+                               &project_ctx, &job_ctx);
 
         OpenJobScreenCtx open_job_ctx;
         open_job_screen_init(&open_job_ctx, &stack,
                              placeholder_screen_as_ui_screen(&measure_points_stub),
-                             &project_ctx);
+                             &project_ctx, &job_ctx);
 
         JobSetupScreenCtx job_setup_ctx;
         job_setup_screen_init(&job_setup_ctx, &stack,
@@ -977,6 +992,9 @@ static void test_continue_project_end_to_end(void)
               "The 'restarted' ProjectContext starts with no project set, "
               "matching what a real process restart loses");
 
+        JobContext job_ctx;
+        job_context_init(&job_ctx);
+
         PlaceholderScreenCtx measure_points_stub;
         PlaceholderScreenCtx stats_stub;
         placeholder_screen_init(&measure_points_stub, "Measure Points -- not built yet");
@@ -985,12 +1003,12 @@ static void test_continue_project_end_to_end(void)
         JobCreateScreenCtx job_create_ctx;
         job_create_screen_init(&job_create_ctx, &stack,
                                placeholder_screen_as_ui_screen(&measure_points_stub),
-                               &project_ctx);
+                               &project_ctx, &job_ctx);
 
         OpenJobScreenCtx open_job_ctx;
         open_job_screen_init(&open_job_ctx, &stack,
                              placeholder_screen_as_ui_screen(&measure_points_stub),
-                             &project_ctx);
+                             &project_ctx, &job_ctx);
 
         JobSetupScreenCtx job_setup_ctx;
         job_setup_screen_init(&job_setup_ctx, &stack,
@@ -1152,6 +1170,317 @@ static void test_continue_project_status_cases(void)
 }
 
 /* =========================================================================
+ * Measure Points
+ *
+ * test_feed_fn()/TestFeedState below are this file's own RtkFeedFn
+ * implementation -- not measure_points_no_feed() (which always reports
+ * an invalid fix, by design, see measure_points_screen.h) -- so these
+ * tests can drive the screen with a controllable fake fix without any
+ * real hardware or networking, exactly the point of the RtkFeed seam.
+ * ========================================================================= */
+
+typedef struct {
+    RtkFeedPosition next;
+} TestFeedState;
+
+static void test_feed_fn(void *user, RtkFeedPosition *out)
+{
+    TestFeedState *state = (TestFeedState *)user;
+    *out = state->next;
+}
+
+static RtkFeed make_test_feed(TestFeedState *state)
+{
+    RtkFeed f = { .fn = test_feed_fn, .user = state };
+    return f;
+}
+
+/* -------------------------------------------------------------------------
+ * No job active -- MeasurePointsScreenCtx constructed directly (not
+ * reached through the full nav tree) with an empty JobContext, same
+ * "exercise the status early-out directly via a fresh ctx" shortcut
+ * test_open_job_status_cases() above already uses for OPEN_JOB_STATUS_
+ * NO_PROJECT.
+ * ---------------------------------------------------------------------- */
+
+static void test_measure_points_no_job_status(void)
+{
+    UiScreenStack stack;
+    ui_stack_init(&stack);
+
+    JobContext job_ctx;
+    job_context_init(&job_ctx);
+    ASSERT(!job_context_has_job(&job_ctx), "A fresh JobContext has no job set");
+
+    MeasurePointsScreenCtx ctx;
+    measure_points_screen_init(&ctx, &stack, &job_ctx, measure_points_no_feed());
+    ui_stack_push(&stack, measure_points_screen_as_ui_screen(&ctx));
+
+    ASSERT(ctx.status == MEASURE_POINTS_STATUS_NO_JOB,
+          "With no job set, Measure Points reports MEASURE_POINTS_STATUS_NO_JOB");
+    ASSERT(ctx.points.count == 0,
+          "With no job set, there are no points to show");
+}
+
+/* -------------------------------------------------------------------------
+ * Capture Point with no valid fix -- must report MEASURE_POINTS_STATUS_
+ * NO_FIX and must NOT add a point, regardless of JobContext state.
+ * Uses measure_points_no_feed() directly since "no feed" already means
+ * "never valid" -- no TestFeedState needed for this one.
+ * ---------------------------------------------------------------------- */
+
+static void test_measure_points_no_fix_blocks_capture(void)
+{
+    UiScreenStack stack;
+    ui_stack_init(&stack);
+
+    char tmpl[] = "/tmp/geomark_test_home_XXXXXX";
+    char *tmp_home = mkdtemp(tmpl);
+    ASSERT(tmp_home != NULL, "mkdtemp created a disposable HOME for this test");
+
+    JobContext job_ctx;
+    job_context_set(&job_ctx, tmp_home, "TESTPROJ", "TESTJOB");
+
+    MeasurePointsScreenCtx ctx;
+    measure_points_screen_init(&ctx, &stack, &job_ctx, measure_points_no_feed());
+    ui_stack_push(&stack, measure_points_screen_as_ui_screen(&ctx));
+    ui_stack_tick(&stack, 0); /* pulls the (always-invalid) feed into ctx.latest */
+
+    UiWidget *capture_btn = find_widget(&ctx.grid, WIDGET_BUTTON, "Capture Point");
+    ASSERT(capture_btn != NULL, "Capture Point button exists on Measure Points");
+    if (capture_btn)
+        activate_widget_directly(&ctx.grid, capture_btn);
+
+    ASSERT(ctx.status == MEASURE_POINTS_STATUS_NO_FIX,
+          "Capturing with no valid fix reports MEASURE_POINTS_STATUS_NO_FIX");
+    ASSERT(ctx.points.count == 0,
+          "Capturing with no valid fix does not add a point");
+
+    rmdir(tmp_home);
+}
+
+/* -------------------------------------------------------------------------
+ * Full flow: New Project -> Job Setup -> Create New Job (which sets
+ * JobContext) -> Measure Points -> inject a fake valid fix via
+ * TestFeedState -> Capture Point -> confirm the point lands in the
+ * in-memory store AND on disk (points.csv under the real job
+ * directory). Then simulates re-entering the screen (same job, fresh
+ * ctx -- e.g. navigating back to Job Setup and into Open Existing Job
+ * again in a real session) and confirms the point reloads from
+ * points.csv, proving the on_enter reload path
+ * (reload_job_data()/measure_points_load_csv()) actually works, not
+ * just the in-memory add path.
+ * ---------------------------------------------------------------------- */
+
+static void test_measure_points_capture_and_persist_end_to_end(void)
+{
+    char tmpl[] = "/tmp/geomark_test_home_XXXXXX";
+    char *tmp_home = mkdtemp(tmpl);
+    ASSERT(tmp_home != NULL, "mkdtemp created a disposable HOME for this test");
+
+    const char *real_home = getenv("HOME");
+    char real_home_buf[512] = {0};
+    if (real_home) strncpy(real_home_buf, real_home, sizeof(real_home_buf) - 1);
+    setenv("HOME", tmp_home, 1);
+
+    UiScreenStack stack;
+    ui_stack_init(&stack);
+
+    ProjectContext project_ctx;
+    project_context_init(&project_ctx);
+
+    JobContext job_ctx;
+    job_context_init(&job_ctx);
+
+    TestFeedState feed_state;
+    memset(&feed_state, 0, sizeof(feed_state));
+
+    MeasurePointsScreenCtx measure_points_ctx;
+    measure_points_screen_init(&measure_points_ctx, &stack, &job_ctx,
+                               make_test_feed(&feed_state));
+
+    JobCreateScreenCtx job_create_ctx;
+    job_create_screen_init(&job_create_ctx, &stack,
+                           measure_points_screen_as_ui_screen(&measure_points_ctx),
+                           &project_ctx, &job_ctx);
+
+    OpenJobScreenCtx open_job_ctx;
+    open_job_screen_init(&open_job_ctx, &stack,
+                         measure_points_screen_as_ui_screen(&measure_points_ctx),
+                         &project_ctx, &job_ctx);
+
+    JobSetupScreenCtx job_setup_ctx;
+    job_setup_screen_init(&job_setup_ctx, &stack,
+                          job_create_screen_as_ui_screen(&job_create_ctx),
+                          open_job_screen_as_ui_screen(&open_job_ctx));
+
+    NewProjectScreenCtx new_project_ctx;
+    new_project_screen_init(&new_project_ctx, &stack,
+                            job_setup_screen_as_ui_screen(&job_setup_ctx),
+                            &project_ctx);
+
+    MainMenuScreenCtx menu_ctx;
+    PlaceholderScreenCtx continue_stub, stats_stub;
+    placeholder_screen_init(&continue_stub, "Continue Project -- not built yet");
+    placeholder_screen_init(&stats_stub,    "Stats -- not built yet");
+    main_menu_screen_init(&menu_ctx, &stack,
+                          new_project_screen_as_ui_screen(&new_project_ctx),
+                          placeholder_screen_as_ui_screen(&continue_stub),
+                          placeholder_screen_as_ui_screen(&stats_stub));
+
+    SleepScreenCtx sleep_ctx;
+    sleep_screen_init(&sleep_ctx, &stack, main_menu_screen_as_ui_screen(&menu_ctx));
+    ui_stack_push(&stack, sleep_screen_as_ui_screen(&sleep_ctx));
+
+    UiEvent nav_down = { .type = UI_EVENT_NAV_DOWN };
+    UiEvent activate  = { .type = UI_EVENT_ACTIVATE };
+    UiEvent back      = { .type = UI_EVENT_BACK };
+    ui_stack_dispatch_event(&stack, nav_down); /* Sleep -> Main Menu */
+    ui_stack_dispatch_event(&stack, activate); /* Start New Project  */
+
+    const char *project_name = "TESTPROJ";
+    for (const char *p = project_name; *p; p++) {
+        UiWidget *key = NULL;
+        for (uint32_t i = 0; i < new_project_ctx.grid.count; i++) {
+            UiWidget *w = &new_project_ctx.grid.widgets[i];
+            if (w->kind == WIDGET_BUTTON && w->label && w->label[0] == *p
+                && w->label[1] == '\0') {
+                key = w;
+                break;
+            }
+        }
+        ASSERT(key != NULL, "Each letter of the test project name has a matching key");
+        if (key) activate_widget_directly(&new_project_ctx.grid, key);
+    }
+    UiWidget *create_project_btn =
+        find_widget(&new_project_ctx.grid, WIDGET_BUTTON, "Create Project");
+    ASSERT(create_project_btn != NULL, "Create Project button exists");
+    if (create_project_btn)
+        activate_widget_directly(&new_project_ctx.grid, create_project_btn);
+
+    UiWidget *create_new_job_btn =
+        find_widget(&job_setup_ctx.grid, WIDGET_BUTTON, "Create New Job");
+    ASSERT(create_new_job_btn != NULL, "Create New Job button exists on Job Setup");
+    if (create_new_job_btn)
+        activate_widget_directly(&job_setup_ctx.grid, create_new_job_btn);
+
+    const char *job_name = "TESTJOB";
+    UiWidget *job_name_field =
+        find_widget(&job_create_ctx.grid, WIDGET_TEXT_FIELD, "Job Name");
+    ASSERT(job_name_field != NULL, "Job Name text field exists on Job Create");
+    if (job_name_field)
+        activate_widget_directly(&job_create_ctx.grid, job_name_field);
+
+    for (const char *p = job_name; *p; p++) {
+        UiWidget *key = find_widget(&job_create_ctx.grid, WIDGET_BUTTON,
+                                    (char[]){ *p, '\0' });
+        ASSERT(key != NULL, "Each letter of the test job name has a matching key");
+        if (key) activate_widget_directly(&job_create_ctx.grid, key);
+    }
+
+    UiWidget *create_job_btn =
+        find_widget(&job_create_ctx.grid, WIDGET_BUTTON, "Create Job");
+    ASSERT(create_job_btn != NULL, "Create Job button exists");
+    if (create_job_btn)
+        activate_widget_directly(&job_create_ctx.grid, create_job_btn);
+
+    ASSERT(ui_stack_top(&stack)->ctx == &measure_points_ctx,
+          "Create Job pushes the real Measure Points screen, not a placeholder");
+    ASSERT(job_context_has_job(&job_ctx), "JobContext has a job set after Create Job");
+    ASSERT(strcmp(job_ctx.name, job_name) == 0,
+          "JobContext's job name matches what was typed during Create");
+
+    /* on_enter (fired by the push above) must have already loaded this
+     * brand-new job's (nonexistent) points.csv into an empty store. */
+    ASSERT(measure_points_ctx.status == MEASURE_POINTS_STATUS_NONE,
+          "A brand-new job with no points.csv yet reports no error status");
+    ASSERT(measure_points_ctx.points.count == 0,
+          "A brand-new job starts with zero captured points");
+
+    /* Inject a fake valid fix and capture it. */
+    feed_state.next.lat         = 47.9253;
+    feed_state.next.lon         = -97.0329;
+    feed_state.next.alt         = 250.0;
+    feed_state.next.fix_quality = (uint8_t)FIX_RTK_FIXED;
+    feed_state.next.hdop        = 0.8;
+    feed_state.next.num_sats    = 12;
+    feed_state.next.valid       = true;
+
+    ui_stack_tick(&stack, 0); /* pulls feed_state into measure_points_ctx.latest */
+    ASSERT(measure_points_ctx.latest.valid,
+          "After a tick, the screen's latest position reflects the injected fix");
+
+    UiWidget *capture_btn = find_widget(&measure_points_ctx.grid, WIDGET_BUTTON, "Capture Point");
+    ASSERT(capture_btn != NULL, "Capture Point button exists on Measure Points");
+    if (capture_btn)
+        activate_widget_directly(&measure_points_ctx.grid, capture_btn);
+
+    ASSERT(measure_points_ctx.status == MEASURE_POINTS_STATUS_NONE,
+          "Capturing with a valid fix reports no error status");
+    ASSERT(measure_points_ctx.points.count == 1,
+          "Capturing with a valid fix adds exactly one point");
+    ASSERT(measure_points_ctx.points.points[0].point_num == 1,
+          "The captured point is numbered 1 (first point in this job)");
+    ASSERT(fabs(measure_points_ctx.points.points[0].lat - 47.9253) < 1e-6,
+          "The captured point's latitude matches the injected fix");
+
+    /* Confirm it actually landed on disk, not just in memory. */
+    char csv_path[600];
+    measure_points_csv_path(job_ctx.job_dir, csv_path, sizeof(csv_path));
+    struct stat st;
+    ASSERT(stat(csv_path, &st) == 0,
+          "points.csv exists on disk under the job directory after a capture");
+
+    /* Back out of Measure Points (BACK is unconsumed -- see
+     * measure_points_screen.c's on_event -- so the stack pops to Job
+     * Create), then simulate re-entering Measure Points for the same
+     * job via a SECOND, independent MeasurePointsScreenCtx -- proves
+     * on_enter's reload_job_data() path actually reads points.csv back,
+     * not just that the in-memory add path works. */
+    ui_stack_dispatch_event(&stack, back); /* Measure Points -> Job Create */
+    ASSERT(ui_stack_top(&stack)->ctx == &job_create_ctx,
+          "One BACK from Measure Points returns to Job Create");
+
+    MeasurePointsScreenCtx reentry_ctx;
+    measure_points_screen_init(&reentry_ctx, &stack, &job_ctx, measure_points_no_feed());
+    ui_stack_push(&stack, measure_points_screen_as_ui_screen(&reentry_ctx));
+
+    ASSERT(reentry_ctx.status == MEASURE_POINTS_STATUS_NONE,
+          "Re-entering Measure Points for the same job loads points.csv with no error");
+    ASSERT(reentry_ctx.points.count == 1,
+          "Re-entering Measure Points reloads the one point captured earlier");
+    ASSERT(fabs(reentry_ctx.points.points[0].lon - (-97.0329)) < 1e-6,
+          "The reloaded point's longitude matches what was captured");
+
+    /* Clean up. */
+    unlink(csv_path);
+    char ini_path[640];
+    snprintf(ini_path, sizeof(ini_path), "%s/job.ini", job_ctx.job_dir);
+    unlink(ini_path);
+    rmdir(job_ctx.job_dir);
+
+    char testproj_dir[560];
+    snprintf(testproj_dir, sizeof(testproj_dir),
+             "%s/geomark-data/projects/%s", tmp_home, project_name);
+    rmdir(testproj_dir);
+
+    char projects_dir[540];
+    snprintf(projects_dir, sizeof(projects_dir), "%s/geomark-data/projects", tmp_home);
+    rmdir(projects_dir);
+
+    char data_dir[520];
+    snprintf(data_dir, sizeof(data_dir), "%s/geomark-data", tmp_home);
+    rmdir(data_dir);
+
+    rmdir(tmp_home);
+
+    if (real_home_buf[0])
+        setenv("HOME", real_home_buf, 1);
+    else
+        unsetenv("HOME");
+}
+
+/* =========================================================================
  * main
  * ========================================================================= */
 int main(void)
@@ -1164,6 +1493,9 @@ int main(void)
     test_open_job_status_cases();
     test_continue_project_end_to_end();
     test_continue_project_status_cases();
+    test_measure_points_no_job_status();
+    test_measure_points_no_fix_blocks_capture();
+    test_measure_points_capture_and_persist_end_to_end();
 
     if (g_tests_failed == 0) {
         printf("All %d screen tests passed.\n", g_tests_run);
