@@ -10,7 +10,10 @@
 
 #include <string.h>
 
-#define STATUS_Y 30
+#define TITLE_Y  8   /* matches job_create_screen_draw.c's STATUS_Y convention --
+                       * title at TITLE_Y, scale 2, occupies TITLE_Y..TITLE_Y+14 */
+#define STATUS_Y (TITLE_Y + 22) /* below the title with an 8px gap, same offset
+                                 * job_create_screen_draw.c uses */
 
 static const char *status_text(OpenJobStatus status)
 {
@@ -37,7 +40,7 @@ void open_job_screen_render(void *raw_ctx)
     uint8_t  scale      = 2;
     uint16_t title_w    = (uint16_t)(strlen(title) * (TFT_FONT_W + 1) * scale);
     uint16_t tx         = (uint16_t)((TFT_WIDTH > title_w) ? (TFT_WIDTH - title_w) / 2 : 4);
-    display_draw_string(tx, 24, title, TFT_CYAN, TFT_BLACK, scale);
+    display_draw_string(tx, TITLE_Y, title, TFT_CYAN, TFT_BLACK, scale);
 
     const char *msg = status_text(ctx->status);
     if (msg) {
