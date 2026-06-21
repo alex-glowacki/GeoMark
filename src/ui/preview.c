@@ -21,7 +21,9 @@
 #include "ui/screens/job_setup_screen.h"
 #include "ui/screens/main_menu_screen.h"
 #include "ui/screens/new_project_screen.h"
+#include "ui/screens/open_job_screen.h"
 #include "ui/screens/placeholder_screen.h"
+#include "ui/screens/project_context.h"
 #include "ui/screens/sleep_screen.h"
 #include "ui/tft/display.h"
 #include "util/log.h"
@@ -102,27 +104,35 @@ gm_status_t ui_preview_run(void)
     UiScreenStack stack;
     ui_stack_init(&stack);
 
-    PlaceholderScreenCtx open_job_stub;
+    ProjectContext project_ctx;
+    project_context_init(&project_ctx);
+
     PlaceholderScreenCtx measure_points_stub;
     PlaceholderScreenCtx continue_stub;
     PlaceholderScreenCtx stats_stub;
-    placeholder_screen_init(&open_job_stub,       "Open Existing Job -- not built yet");
     placeholder_screen_init(&measure_points_stub, "Measure Points -- not built yet");
     placeholder_screen_init(&continue_stub,       "Continue Project -- not built yet");
     placeholder_screen_init(&stats_stub,          "Stats -- not built yet");
 
     JobCreateScreenCtx job_create_ctx;
     job_create_screen_init(&job_create_ctx, &stack,
-                           placeholder_screen_as_ui_screen(&measure_points_stub));
+                           placeholder_screen_as_ui_screen(&measure_points_stub),
+                           &project_ctx);
+
+    OpenJobScreenCtx open_job_ctx;
+    open_job_screen_init(&open_job_ctx, &stack,
+                         placeholder_screen_as_ui_screen(&measure_points_stub),
+                         &project_ctx);
 
     JobSetupScreenCtx job_setup_ctx;
     job_setup_screen_init(&job_setup_ctx, &stack,
                           job_create_screen_as_ui_screen(&job_create_ctx),
-                          placeholder_screen_as_ui_screen(&open_job_stub));
+                          open_job_screen_as_ui_screen(&open_job_ctx));
 
     NewProjectScreenCtx new_project_ctx;
     new_project_screen_init(&new_project_ctx, &stack,
-                            job_setup_screen_as_ui_screen(&job_setup_ctx));
+                            job_setup_screen_as_ui_screen(&job_setup_ctx),
+                            &project_ctx);
 
     MainMenuScreenCtx menu_ctx;
     main_menu_screen_init(&menu_ctx, &stack,
