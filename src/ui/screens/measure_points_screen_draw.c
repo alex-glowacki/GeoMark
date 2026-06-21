@@ -1,17 +1,27 @@
 /**
  * @file ui/screens/measure_points_screen_draw.c
- * @brief Measure Points rendering: title bar, left map panel (captured
- *        points plotted as "X" markers), right status panel (fix
- *        badge, lat/lon/alt/hdop/sats/age, point count, Capture Point
- *        button via the widget grid).
+ * @brief Measure Points rendering: title bar, left map panel (white
+ *        background, captured points plotted as black "X" markers),
+ *        right status/input column (fix badge, Point name / Code /
+ *        Target height fields, Capture Point button, compact live-fix
+ *        readout -- all rendered generically via ui_grid_render() for
+ *        the text fields/button, by hand here for the badge/readout),
+ *        and the on-screen keyboard filling the bottom half (also
+ *        rendered generically via ui_grid_render(), since keyboard
+ *        keys are plain WIDGET_BUTTON entries in the same grid -- see
+ *        ui/core/keyboard.h's file-level doc comment).
  *
- * Fix badge color/label conventions deliberately mirror
- * ui/tft/screen.c's badge_color()/badge_label() exactly (same colors,
- * same five-way switch) -- this is the legacy production status
- * screen's own established visual language for fix quality; Measure
- * Points should look like the same product, not invent a second one.
- * screen.c itself is untouched (per the production-flow rule) --this
- * file only reuses its color choices, not its code.
+ * Fix badge color conventions deliberately mirror ui/tft/screen.c's
+ * badge_color()/badge_label() exactly (same colors, same five-way
+ * switch) -- this is the legacy production status screen's own
+ * established visual language for fix quality; Measure Points should
+ * look like the same product, not invent a second one. screen.c itself
+ * is untouched (per the production-flow rule) -- this file only reuses
+ * its color choices, not its code.
+ *
+ * Map panel colors: white background, black markers/text (explicit
+ * design decision -- distinguishes the map visually from the dark
+ * status/input column and the dark keyboard below it).
  */
 
 #define _GNU_SOURCE
@@ -20,43 +30,36 @@
 #include "ui/tft/display.h"
 #include "util/units.h"
 
-#include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
+#include <stdbool.h>
 
 /* -------------------------------------------------------------------------
  * Layout -- mirrors the *_X/_Y constant style every other screen draw
  * file in this codebase already uses (job_create_screen_draw.c,
- * open_job_screen_draw.c, etc.). STATUS_PANEL_W/_X and PANEL_TOP_Y/
- * _BOTTOM_Y come from measure_points_screen.h (shared with that file's
- * Capture Point button placement); everything below is local to this
- * draw file only.
+ * open_job_screen_draw.c, etc.). STATUS_PANEL_W/_X, PANEL_TOP_Y/
+ * _BOTTOM_Y, and the MP_* field-row constants come from
+ * measure_points_screen.h (shared with that file's widget placement);
+ * everything below is local to this draw file only.
  * ---------------------------------------------------------------------- */
 
 #define TITLE_Y   8
 #define STATUS_MSG_Y (TITLE_Y + 22)
 
 #define MAP_BORDER_COL   TFT_DKGRAY
-#define MAP_BG_COL       TFT_BLACK
-#define MAP_POINT_COL    TFT_GREEN
+#define MAP_BG_COL       TFT_WHITE
+#define MAP_POINT_COL    TFT_BLACK
 #define MAP_MARGIN       4
 
 #define PANEL_DIVIDER_COL TFT_DKGRAY
 
-/* Status panel field layout, relative to STATUS_PANEL_X */
-#define BADGE_Y       (PANEL_TOP_Y + 4)
-#define BADGE_H       36
-#define ROW_GAP       34
-#define ROW1_Y        (BADGE_Y + BADGE_H + 16)  /* LAT */
-#define ROW2_Y        (ROW1_Y + ROW_GAP)        /* LON */
-#define ROW3_Y        (ROW2_Y + ROW_GAP)        /* ALT */
-#define ROW4_Y        (ROW3_Y + ROW_GAP)        /* HDOP */
-#define ROW5_Y        (ROW4_Y + ROW_GAP)        /* SATS */
-#define ROW6_Y        (ROW5_Y + ROW_GAP)        /* AGE */
-#define ROW7_Y        (ROW6_Y + ROW_GAP + 8)    /* POINTS captured */
+#define FIELD_LABEL_X  (STATUS_PANEL_X + MP_FIELD_MARGIN)
 
-#define FIELD_LABEL_X  (STATUS_PANEL_X + 8)
-#define FIELD_VALUE_X  (STATUS_PANEL_X + 8)
+/* Compact live-fix readout -- small text, two rows, see this screen's
+ * field-crew-decided priority order (badge/inputs/Capture all take
+ * priority over this readout's size). */
+#define READOUT_ROW1_Y MP_READOUT_Y
+#define READOUT_ROW2_Y (MP_READOUT_Y + 16)
 
 /* -------------------------------------------------------------------------
  * Fix badge -- mirrors ui/tft/screen.c's badge_color()/badge_label().
@@ -108,15 +111,18 @@ static const char *status_text(MeasurePointsStatus status)
 /* -------------------------------------------------------------------------
  * Map panel
  *
- * Plots every captured point as an "X" via the built-in font's own 'X'
- * glyph -- no line/circle primitive exists in display.h (pixel/rect/
- * string only, see that header), and a glyph is the simplest marker
- * that needs none. Each point is projected through
+ * Plots every captured point as a black "X" via the built-in font's
+ * own 'X' glyph -- no line/circle primitive exists in display.h
+ * (pixel/rect/string only, see that header), and a glyph is the
+ * simplest marker that needs none. Each point is projected through
  * measure_points_project() (job coord_sys aware, see that function's
  * own doc comment) into the job's east/north units, then scaled to fit
  * the panel with a margin. Breakline rendering for coded points is
  * deliberately not implemented here (see measure_points.h's file-level
  * doc comment) -- every point renders as an unconnected "X" today.
+ * Background is white, markers/any future map text are black -- the
+ * map panel is visually distinct from the dark status/input column and
+ * keyboard by design.
  * ---------------------------------------------------------------------- */
 
 static void draw_map_panel(const MeasurePointsScreenCtx *ctx, uint16_t map_x, uint16_t map_y,
@@ -212,14 +218,20 @@ static void draw_map_panel(const MeasurePointsScreenCtx *ctx, uint16_t map_x, ui
 }
 
 /* -------------------------------------------------------------------------
- * Status panel
+ * Status/input column -- badge + compact live-fix readout. The three
+ * text fields and the Capture Point button are NOT drawn here -- they
+ * are real WIDGET_TEXT_FIELD/WIDGET_BUTTON entries in ctx->grid,
+ * rendered generically by the ui_grid_render() call at the end of
+ * measure_points_screen_render() below, same as every other field on
+ * every other screen in this codebase.
  * ---------------------------------------------------------------------- */
 
-static void draw_status_panel(const MeasurePointsScreenCtx *ctx)
+static void draw_status_column(const MeasurePointsScreenCtx *ctx)
 {
-    char buf[48];
+    char buf[56];
 
-    /* Divider between map and status panels. */
+    /* Divider between map and status/input column, spanning the full
+     * height down to the keyboard boundary. */
     display_fill_rect(STATUS_PANEL_X - 2, PANEL_TOP_Y, 2,
                       (uint16_t)(PANEL_BOTTOM_Y - PANEL_TOP_Y), PANEL_DIVIDER_COL);
 
@@ -228,31 +240,30 @@ static void draw_status_panel(const MeasurePointsScreenCtx *ctx)
 
     /* Fix badge */
     uint16_t bw = (uint16_t)(STATUS_PANEL_W - 16);
-    display_fill_rect(STATUS_PANEL_X + 8, BADGE_Y, bw, BADGE_H, badge_color(ft));
-    display_draw_string(STATUS_PANEL_X + 14, (uint16_t)(BADGE_Y + 10), badge_label(ft),
-                        TFT_BLACK, badge_color(ft), 2);
+    display_fill_rect(STATUS_PANEL_X + 8, MP_BADGE_Y, bw, MP_BADGE_H, badge_color(ft));
+    display_draw_string(STATUS_PANEL_X + 14, (uint16_t)(MP_BADGE_Y + 6), badge_label(ft),
+                        TFT_BLACK, badge_color(ft), 1);
 
+    /* Compact live-fix readout -- small text, two rows. Lowest
+     * priority in this column's vertical budget (see
+     * measure_points_screen.h's row-math doc comment), so it shrinks
+     * first: a single combined line per row rather than the larger
+     * separate labeled rows the original (pre-keyboard) layout had. */
     if (!pos->valid) {
-        display_draw_string(FIELD_LABEL_X, ROW1_Y, "Waiting for fix...", TFT_GRAY, TFT_BLACK, 1);
+        display_draw_string(FIELD_LABEL_X, READOUT_ROW1_Y, "Waiting for fix...",
+                            TFT_GRAY, TFT_BLACK, 1);
     } else {
-        snprintf(buf, sizeof(buf), "LAT %.7f", pos->lat);
-        display_draw_string(FIELD_LABEL_X, ROW1_Y, buf, TFT_WHITE, TFT_BLACK, 1);
+        snprintf(buf, sizeof(buf), "%.6f, %.6f", pos->lat, pos->lon);
+        display_draw_string(FIELD_LABEL_X, READOUT_ROW1_Y, buf, TFT_WHITE, TFT_BLACK, 1);
 
-        snprintf(buf, sizeof(buf), "LON %.7f", pos->lon);
-        display_draw_string(FIELD_LABEL_X, ROW2_Y, buf, TFT_WHITE, TFT_BLACK, 1);
-
-        snprintf(buf, sizeof(buf), "ALT %.1f ft", gm_m_to_intl_ft(pos->alt));
-        display_draw_string(FIELD_LABEL_X, ROW3_Y, buf, TFT_WHITE, TFT_BLACK, 1);
-
-        snprintf(buf, sizeof(buf), "HDOP %.1f", pos->hdop);
-        display_draw_string(FIELD_LABEL_X, ROW4_Y, buf, TFT_WHITE, TFT_BLACK, 1);
-
-        snprintf(buf, sizeof(buf), "SATS %02u", (unsigned)pos->num_sats);
-        display_draw_string(FIELD_LABEL_X, ROW5_Y, buf, TFT_WHITE, TFT_BLACK, 1);
+        snprintf(buf, sizeof(buf), "Alt %.1fft  HDOP %.1f  Sats %02u",
+                gm_m_to_intl_ft(pos->alt), pos->hdop, (unsigned)pos->num_sats);
+        display_draw_string(FIELD_LABEL_X, READOUT_ROW2_Y, buf, TFT_WHITE, TFT_BLACK, 1);
     }
 
-    snprintf(buf, sizeof(buf), "POINTS CAPTURED: %u", ctx->points.count);
-    display_draw_string(FIELD_VALUE_X, ROW7_Y, buf, TFT_CYAN, TFT_BLACK, 1);
+    snprintf(buf, sizeof(buf), "Points captured: %u", ctx->points.count);
+    display_draw_string(FIELD_LABEL_X, (uint16_t)(READOUT_ROW2_Y + 16), buf,
+                        TFT_CYAN, TFT_BLACK, 1);
 }
 
 /* -------------------------------------------------------------------------
@@ -284,7 +295,10 @@ void measure_points_screen_render(void *raw_ctx)
     uint16_t map_h = (uint16_t)(PANEL_BOTTOM_Y - PANEL_TOP_Y);
     draw_map_panel(ctx, map_x, map_y, map_w, map_h);
 
-    draw_status_panel(ctx);
+    draw_status_column(ctx);
 
+    /* Renders the three text fields, the Capture Point button, AND the
+     * on-screen keyboard's keys -- all real widgets in ctx->grid (see
+     * this file's own doc comment). */
     ui_grid_render(&ctx->grid);
 }
