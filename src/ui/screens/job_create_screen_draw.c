@@ -19,6 +19,8 @@ static const char *status_text(JobCreateStatus status)
         return "Enter a job name first";
     case JOB_CREATE_STATUS_IO_ERROR:
         return "Could not create the job folder -- check storage";
+    case JOB_CREATE_STATUS_NO_PROJECT:
+        return "No active project -- start from New Project first";
     case JOB_CREATE_STATUS_NONE:
     default:
         return NULL;
