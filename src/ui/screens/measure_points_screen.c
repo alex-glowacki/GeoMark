@@ -354,6 +354,13 @@ static void on_capture_point(UiWidget *self, void *screen_ctx)
     log_info("measure_points: captured point #%u ('%s')", stored->point_num, stored->name);
 }
 
+static void on_export_activate(UiWidget *self, void *screen_ctx)
+{
+    (void)self;
+    MeasurePointsScreenCtx *ctx = (MeasurePointsScreenCtx *)screen_ctx;
+    ui_stack_push(ctx->stack, ctx->export_screen);
+}
+
 /* -------------------------------------------------------------------------
  * Grid rebuild -- single source of truth for the currently focusable
  * widget set, driven entirely by ctx->overlay. Called from init,
@@ -418,6 +425,10 @@ static void rebuild_grid(MeasurePointsScreenCtx *ctx)
         UiRect capture_r = { STATUS_PANEL_X + MP_FIELD_MARGIN, MP_CAPTURE_Y,
                              MP_NAME_W, MP_CAPTURE_H };
         ui_grid_add_button(&ctx->grid, capture_r, "Capture Point", on_capture_point);
+
+        UiRect export_r = { STATUS_PANEL_X + MP_FIELD_MARGIN, MP_EXPORT_Y,
+                            MP_NAME_W, MP_EXPORT_H };
+        ui_grid_add_button(&ctx->grid, export_r, "Export", on_export_activate);
         break;
     }
     }
@@ -428,12 +439,13 @@ static void rebuild_grid(MeasurePointsScreenCtx *ctx)
  * ---------------------------------------------------------------------- */
 
 void measure_points_screen_init(MeasurePointsScreenCtx *ctx, UiScreenStack *stack,
-                                const JobContext *job_ctx, RtkFeed feed)
+                                const JobContext *job_ctx, RtkFeed feed, UiScreen export_screen)
 {
     memset(ctx, 0, sizeof(*ctx));
-    ctx->stack   = stack;
-    ctx->job_ctx = job_ctx;
-    ctx->feed    = feed;
+    ctx->stack         = stack;
+    ctx->job_ctx       = job_ctx;
+    ctx->feed          = feed;
+    ctx->export_screen = export_screen;
 
     job_metadata_defaults(&ctx->job_meta);
     measure_points_init(&ctx->points);

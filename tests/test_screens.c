@@ -11,6 +11,7 @@
 #include "../src/collector/job_metadata.h"
 #include "../src/ui/core/screen_stack.h"
 #include "../src/ui/screens/continue_project_screen.h"
+#include "../src/ui/screens/export_screen.h"
 #include "../src/ui/screens/job_context.h"
 #include "../src/ui/screens/job_create_screen.h"
 #include "../src/ui/screens/job_setup_screen.h"
@@ -1213,7 +1214,10 @@ static void test_measure_points_no_job_status(void)
     ASSERT(!job_context_has_job(&job_ctx), "A fresh JobContext has no job set");
 
     MeasurePointsScreenCtx ctx;
-    measure_points_screen_init(&ctx, &stack, &job_ctx, measure_points_no_feed());
+    ExportScreenCtx export_ctx;
+    export_screen_init(&export_ctx, &stack, &job_ctx);
+    measure_points_screen_init(&ctx, &stack, &job_ctx, measure_points_no_feed(),
+                               export_screen_as_ui_screen(&export_ctx));
     ui_stack_push(&stack, measure_points_screen_as_ui_screen(&ctx));
 
     ASSERT(ctx.status == MEASURE_POINTS_STATUS_NO_JOB,
@@ -1242,7 +1246,10 @@ static void test_measure_points_no_fix_blocks_capture(void)
     job_context_set(&job_ctx, tmp_home, "TESTPROJ", "TESTJOB");
 
     MeasurePointsScreenCtx ctx;
-    measure_points_screen_init(&ctx, &stack, &job_ctx, measure_points_no_feed());
+    ExportScreenCtx export_ctx;
+    export_screen_init(&export_ctx, &stack, &job_ctx);
+    measure_points_screen_init(&ctx, &stack, &job_ctx, measure_points_no_feed(),
+                               export_screen_as_ui_screen(&export_ctx));
     ui_stack_push(&stack, measure_points_screen_as_ui_screen(&ctx));
     ui_stack_tick(&stack, 0); /* pulls the (always-invalid) feed into ctx.latest */
 
@@ -1296,8 +1303,11 @@ static void test_measure_points_capture_and_persist_end_to_end(void)
     memset(&feed_state, 0, sizeof(feed_state));
 
     MeasurePointsScreenCtx measure_points_ctx;
+    ExportScreenCtx export_ctx;
+    export_screen_init(&export_ctx, &stack, &job_ctx);
     measure_points_screen_init(&measure_points_ctx, &stack, &job_ctx,
-                               make_test_feed(&feed_state));
+                               make_test_feed(&feed_state),
+                               export_screen_as_ui_screen(&export_ctx));
 
     JobCreateScreenCtx job_create_ctx;
     job_create_screen_init(&job_create_ctx, &stack,
@@ -1452,7 +1462,10 @@ static void test_measure_points_capture_and_persist_end_to_end(void)
           "One BACK from Measure Points returns to Job Create");
 
     MeasurePointsScreenCtx reentry_ctx;
-    measure_points_screen_init(&reentry_ctx, &stack, &job_ctx, measure_points_no_feed());
+    ExportScreenCtx reentry_export_ctx;
+    export_screen_init(&reentry_export_ctx, &stack, &job_ctx);
+    measure_points_screen_init(&reentry_ctx, &stack, &job_ctx, measure_points_no_feed(),
+                               export_screen_as_ui_screen(&reentry_export_ctx));
     ui_stack_push(&stack, measure_points_screen_as_ui_screen(&reentry_ctx));
 
     ASSERT(reentry_ctx.status == MEASURE_POINTS_STATUS_NONE,
@@ -1523,7 +1536,10 @@ static void test_measure_points_typed_fields_and_height_correction(void)
     memset(&feed_state, 0, sizeof(feed_state));
 
     MeasurePointsScreenCtx ctx;
-    measure_points_screen_init(&ctx, &stack, &job_ctx, make_test_feed(&feed_state));
+    ExportScreenCtx export_ctx;
+    export_screen_init(&export_ctx, &stack, &job_ctx);
+    measure_points_screen_init(&ctx, &stack, &job_ctx, make_test_feed(&feed_state),
+                               export_screen_as_ui_screen(&export_ctx));
     ui_stack_push(&stack, measure_points_screen_as_ui_screen(&ctx));
 
     ASSERT(strcmp(ctx.name_buf, "1") == 0,
@@ -1687,7 +1703,10 @@ static void test_measure_points_keyboard_toggle_button(void)
     job_context_init(&job_ctx);
 
     MeasurePointsScreenCtx ctx;
-    measure_points_screen_init(&ctx, &stack, &job_ctx, measure_points_no_feed());
+    ExportScreenCtx export_ctx;
+    export_screen_init(&export_ctx, &stack, &job_ctx);
+    measure_points_screen_init(&ctx, &stack, &job_ctx, measure_points_no_feed(),
+                               export_screen_as_ui_screen(&export_ctx));
     ui_stack_push(&stack, measure_points_screen_as_ui_screen(&ctx));
 
     ASSERT(ctx.overlay == MEASURE_POINTS_OVERLAY_NONE,
@@ -1734,7 +1753,10 @@ static void test_measure_points_back_closes_overlay_first(void)
     ui_stack_push(&stack, placeholder_screen_as_ui_screen(&parent_stub));
 
     MeasurePointsScreenCtx ctx;
-    measure_points_screen_init(&ctx, &stack, &job_ctx, measure_points_no_feed());
+    ExportScreenCtx export_ctx;
+    export_screen_init(&export_ctx, &stack, &job_ctx);
+    measure_points_screen_init(&ctx, &stack, &job_ctx, measure_points_no_feed(),
+                               export_screen_as_ui_screen(&export_ctx));
     ui_stack_push(&stack, measure_points_screen_as_ui_screen(&ctx));
 
     UiWidget *toggle = find_widget(&ctx.grid, WIDGET_BUTTON, "Keyboard");
@@ -1774,7 +1796,10 @@ static void test_measure_points_code_picker_fills_code_field(void)
     job_context_init(&job_ctx);
 
     MeasurePointsScreenCtx ctx;
-    measure_points_screen_init(&ctx, &stack, &job_ctx, measure_points_no_feed());
+    ExportScreenCtx export_ctx;
+    export_screen_init(&export_ctx, &stack, &job_ctx);
+    measure_points_screen_init(&ctx, &stack, &job_ctx, measure_points_no_feed(),
+                               export_screen_as_ui_screen(&export_ctx));
     ui_stack_push(&stack, measure_points_screen_as_ui_screen(&ctx));
 
     ASSERT(ctx.codelist.count > 0,

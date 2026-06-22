@@ -19,6 +19,7 @@
 #include "ui/gpio_button.h"
 #include "ui/input.h"
 #include "ui/screens/continue_project_screen.h"
+#include "ui/screens/export_screen.h"
 #include "ui/screens/job_context.h"
 #include "ui/screens/job_create_screen.h"
 #include "ui/screens/job_setup_screen.h"
@@ -130,9 +131,13 @@ gm_status_t ui_preview_run(const char *pole_top_host)
     PlaceholderScreenCtx stats_stub;
     placeholder_screen_init(&stats_stub, "Stats -- not built yet");
 
+    ExportScreenCtx export_ctx;
+    export_screen_init(&export_ctx, &stack, &job_ctx);
+
     MeasurePointsScreenCtx measure_points_ctx;
     measure_points_screen_init(&measure_points_ctx, &stack, &job_ctx,
-                               rtk_feed_client_as_feed(&feed_client));
+                               rtk_feed_client_as_feed(&feed_client),
+                               export_screen_as_ui_screen(&export_ctx));
 
     JobCreateScreenCtx job_create_ctx;
     job_create_screen_init(&job_create_ctx, &stack,

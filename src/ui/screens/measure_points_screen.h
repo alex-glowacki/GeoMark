@@ -227,6 +227,10 @@ typedef struct {
     UiKeyboardLabels kb_labels;
 
     UiScreenStack *stack;       /* not owned */
+    UiScreen export_screen;     /* pushed by the Export button -- see
+                                 * export_screen.h for why this is a
+                                 * separate pushed screen rather than
+                                 * widgets added directly here */
     const JobContext *job_ctx;  /* not owned; which job's points.csv to use */
     gm_job_metadata_t job_meta; /* loaded from job.ini on enter -- coord_sys, etc. */
 
@@ -267,10 +271,13 @@ typedef struct {
  * active job's resolved directory (see job_context.h). feed is copied
  * by value (it is itself just a function pointer + opaque pointer, see
  * RtkFeed above) -- pass measure_points_no_feed() until real hardware
- * wiring exists.
+ * wiring exists. export_screen is pushed by the Export button -- same
+ * caller-supplied-destination pattern job_create_screen_init()/
+ * open_job_screen_init() already use for the measure_points_screen
+ * they're each given (see export_screen.h for what this screen is).
  */
 void measure_points_screen_init(MeasurePointsScreenCtx *ctx, UiScreenStack *stack,
-                                const JobContext *job_ctx, RtkFeed feed);
+                                const JobContext *job_ctx, RtkFeed feed, UiScreen export_screen);
 
 /** Render implementation — measure_points_screen_draw.c (depends on ui/tft/display.h). */
 void measure_points_screen_render(void *ctx);
@@ -352,6 +359,18 @@ UiScreen measure_points_screen_as_ui_screen(MeasurePointsScreenCtx *ctx);
 #define MP_CAPTURE_H 32
 
 #define MP_READOUT_Y (MP_CAPTURE_Y + MP_CAPTURE_H + 10)
+
+/* Export button -- below the live-fix readout's three text rows
+ * (MP_READOUT_Y..MP_READOUT_Y+~36px), inside the ~130px of panel
+ * height that remains free below it (PANEL_BOTTOM_Y=472 minus the
+ * readout's own bottom edge) -- this screen's fixed layout has room
+ * for exactly one more row here without needing any redesign. Pushes
+ * export_screen (see export_screen.h) rather than performing the
+ * export inline -- this screen's right panel has no space left for
+ * a result message or format choice beyond a single button, see
+ * that header's own doc comment for the full reasoning. */
+#define MP_EXPORT_Y (MP_READOUT_Y + 48)
+#define MP_EXPORT_H 32
 
 /* -------------------------------------------------------------------------
  * Overlay region -- matches ui/core/keyboard.h's own fixed footprint
