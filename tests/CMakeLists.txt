@@ -107,12 +107,15 @@ add_executable(test_screens
     ${PROJECT_SOURCE_DIR}/src/ui/screens/open_job_screen_draw.c
     ${PROJECT_SOURCE_DIR}/src/ui/screens/measure_points_screen.c
     ${PROJECT_SOURCE_DIR}/src/ui/screens/measure_points_screen_draw.c
+    ${PROJECT_SOURCE_DIR}/src/ui/screens/export_screen.c
+    ${PROJECT_SOURCE_DIR}/src/ui/screens/export_screen_draw.c
     ${PROJECT_SOURCE_DIR}/src/ui/screens/placeholder_screen.c
     ${PROJECT_SOURCE_DIR}/src/ui/screens/placeholder_screen_draw.c
     ${PROJECT_SOURCE_DIR}/src/ui/screens/project_context.c
     ${PROJECT_SOURCE_DIR}/src/ui/screens/job_context.c
     ${PROJECT_SOURCE_DIR}/src/collector/job_metadata.c
     ${PROJECT_SOURCE_DIR}/src/collector/measure_points.c
+    ${PROJECT_SOURCE_DIR}/src/collector/measure_points_export.c
     ${PROJECT_SOURCE_DIR}/src/collector/coords.c
     ${PROJECT_SOURCE_DIR}/src/survey/codelist.c
     ${PROJECT_SOURCE_DIR}/src/ui/tft/display.c
@@ -138,6 +141,26 @@ target_include_directories(test_coords PRIVATE
 )
 target_link_libraries(test_coords PRIVATE m)
 add_test(NAME test_coords COMMAND test_coords)
+
+# test_measure_points_export: LandXML/CSV export of a job's captured
+# points. Pure host-testable (no networking, no hardware) -- unlike
+# net/rtk_feed_client.c, this gets a real automated suite. Needs
+# coords.c (measure_points_project()'s ND North branch) and libm
+# (coords.c's own trig functions), same as test_coords above.
+add_executable(test_measure_points_export
+    ${PROJECT_SOURCE_DIR}/tests/test_measure_points_export.c
+    ${PROJECT_SOURCE_DIR}/src/collector/measure_points_export.c
+    ${PROJECT_SOURCE_DIR}/src/collector/measure_points.c
+    ${PROJECT_SOURCE_DIR}/src/collector/coords.c
+    ${PROJECT_SOURCE_DIR}/src/collector/job_metadata.c
+    ${PROJECT_SOURCE_DIR}/src/util/log.c
+)
+target_include_directories(test_measure_points_export PRIVATE
+    ${PROJECT_SOURCE_DIR}/include
+    ${PROJECT_SOURCE_DIR}/src
+)
+target_link_libraries(test_measure_points_export PRIVATE m)
+add_test(NAME test_measure_points_export COMMAND test_measure_points_export)
 
 # test_job_metadata: defaults, unit coercion enforcement, and INI
 # save/load round-trip for job-level metadata.

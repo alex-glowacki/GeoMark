@@ -37,6 +37,7 @@ set(GEOMARK_SOURCES
     src/collector/coords.c
     src/collector/job_metadata.c
     src/collector/measure_points.c
+    src/collector/measure_points_export.c
     src/collector/export.c
     src/net/stream_server.c
     src/net/stream_client.c
@@ -71,6 +72,8 @@ set(GEOMARK_SOURCES
     src/ui/screens/open_job_screen_draw.c
     src/ui/screens/measure_points_screen.c
     src/ui/screens/measure_points_screen_draw.c
+    src/ui/screens/export_screen.c
+    src/ui/screens/export_screen_draw.c
     src/ui/screens/placeholder_screen.c
     src/ui/screens/placeholder_screen_draw.c
     src/ui/screens/project_context.c
