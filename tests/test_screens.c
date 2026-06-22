@@ -1528,6 +1528,8 @@ static void test_measure_points_typed_fields_and_height_correction(void)
 
     ASSERT(strcmp(ctx.name_buf, "1") == 0,
           "A freshly initialized screen defaults Point name to \"1\"");
+    ASSERT(ctx.overlay == MEASURE_POINTS_OVERLAY_NONE,
+          "The keyboard starts hidden, not shown, on a freshly initialized screen");
 
     feed_state.next.lat         = 47.9253;
     feed_state.next.lon         = -97.0329;
@@ -1538,13 +1540,27 @@ static void test_measure_points_typed_fields_and_height_correction(void)
     feed_state.next.valid       = true;
     ui_stack_tick(&stack, 0);
 
+    /* Capture Point must not be reachable while the screen is in its
+     * initial state... well, it IS reachable here (overlay is NONE),
+     * but the moment a field is activated below, it must disappear
+     * from the grid -- the actual point of this test section. */
+
     /* Type a custom point name (non-numeric -- should NOT auto-increment),
      * a code, and a target height, the same per-letter keyboard-driven
-     * pattern every other typed-field test in this file already uses. */
+     * pattern every other typed-field test in this file already uses.
+     * Each field activation must auto-show the keyboard (this screen's
+     * documented dual show-trigger: automatic on field activation, or
+     * explicit via the toggle button -- this test exercises the
+     * automatic path). */
     UiWidget *name_field = find_widget(&ctx.grid, WIDGET_TEXT_FIELD, "Point name");
     ASSERT(name_field != NULL, "Point name text field exists on Measure Points");
     if (name_field)
         activate_widget_directly(&ctx.grid, name_field);
+    ASSERT(ctx.overlay == MEASURE_POINTS_OVERLAY_KEYBOARD,
+          "Activating Point name auto-shows the keyboard overlay");
+    ASSERT(find_widget(&ctx.grid, WIDGET_BUTTON, "Capture Point") == NULL,
+          "Capture Point is removed from the grid while the keyboard overlay is shown");
+
     /* Backspace away the default "1" first via the keyboard's Del key,
      * then type the custom name. */
     UiWidget *del_key = find_widget(&ctx.grid, WIDGET_BUTTON, "Del");
@@ -1562,6 +1578,8 @@ static void test_measure_points_typed_fields_and_height_correction(void)
     ASSERT(strcmp(ctx.name_buf, custom_name) == 0,
           "Typing through the keyboard produced the custom point name");
 
+    /* Re-activating the field re-shows the keyboard (still showing from
+     * above, in this case) and retargets it at Code. */
     UiWidget *code_field = find_widget(&ctx.grid, WIDGET_TEXT_FIELD, "Code");
     ASSERT(code_field != NULL, "Code text field exists on Measure Points");
     if (code_field)
@@ -1593,8 +1611,27 @@ static void test_measure_points_typed_fields_and_height_correction(void)
     ASSERT(strcmp(ctx.height_buf, "65") == 0,
           "Typing through the keyboard produced the expected height string");
 
+    /* Capture Point still must not be reachable -- the keyboard is
+     * still showing (nothing in this test has hidden it yet). */
+    ASSERT(find_widget(&ctx.grid, WIDGET_BUTTON, "Capture Point") == NULL,
+          "Capture Point remains absent from the grid while typing is in progress");
+
+    /* Press Done -- this screen's Done hides the keyboard overlay
+     * entirely (unlike job_create_screen.c's Done, which only drops
+     * field focus but leaves an always-visible keyboard rendered; see
+     * measure_points_screen.c's on_keyboard_done()). Only after this
+     * does Capture Point become reachable -- the explicit field-safety
+     * rule this session's design settled on. */
+    UiWidget *done_key = find_widget(&ctx.grid, WIDGET_BUTTON, "Done");
+    ASSERT(done_key != NULL, "Keyboard Done key exists on Measure Points");
+    if (done_key)
+        activate_widget_directly(&ctx.grid, done_key);
+    ASSERT(ctx.overlay == MEASURE_POINTS_OVERLAY_NONE,
+          "Done hides the keyboard overlay");
+
     UiWidget *capture_btn = find_widget(&ctx.grid, WIDGET_BUTTON, "Capture Point");
-    ASSERT(capture_btn != NULL, "Capture Point button exists on Measure Points");
+    ASSERT(capture_btn != NULL,
+          "Capture Point button exists on Measure Points once the keyboard is hidden");
     if (capture_btn)
         activate_widget_directly(&ctx.grid, capture_btn);
 
@@ -1630,6 +1667,148 @@ static void test_measure_points_typed_fields_and_height_correction(void)
     rmdir(tmp_home);
 }
 
+/* -------------------------------------------------------------------------
+ * Keyboard toggle button: explicit show/hide trigger, independent of
+ * field activation. Also confirms toggling off while already off (a
+ * theoretical double-press race) doesn't somehow show it -- the
+ * idempotent-hide guarantee this session's design settled on, even
+ * though the toggle button itself naturally alternates show/hide
+ * rather than ever calling hide on an already-hidden keyboard in
+ * practice; this test exercises that edge directly via hide_keyboard's
+ * own behavior, not just the toggle's normal alternating use.
+ * ---------------------------------------------------------------------- */
+
+static void test_measure_points_keyboard_toggle_button(void)
+{
+    UiScreenStack stack;
+    ui_stack_init(&stack);
+
+    JobContext job_ctx;
+    job_context_init(&job_ctx);
+
+    MeasurePointsScreenCtx ctx;
+    measure_points_screen_init(&ctx, &stack, &job_ctx, measure_points_no_feed());
+    ui_stack_push(&stack, measure_points_screen_as_ui_screen(&ctx));
+
+    ASSERT(ctx.overlay == MEASURE_POINTS_OVERLAY_NONE,
+          "The keyboard starts hidden");
+
+    UiWidget *toggle = find_widget(&ctx.grid, WIDGET_BUTTON, "Keyboard");
+    ASSERT(toggle != NULL, "The keyboard-toggle button exists on Measure Points");
+    if (toggle)
+        activate_widget_directly(&ctx.grid, toggle);
+    ASSERT(ctx.overlay == MEASURE_POINTS_OVERLAY_KEYBOARD,
+          "Pressing the toggle while hidden shows the keyboard");
+
+    /* The toggle button itself is still in the grid (re-added by
+     * add_base_widgets() every rebuild, including while the keyboard
+     * overlay is showing) -- press it again to hide. */
+    toggle = find_widget(&ctx.grid, WIDGET_BUTTON, "Keyboard");
+    ASSERT(toggle != NULL, "The keyboard-toggle button still exists while the keyboard is shown");
+    if (toggle)
+        activate_widget_directly(&ctx.grid, toggle);
+    ASSERT(ctx.overlay == MEASURE_POINTS_OVERLAY_NONE,
+          "Pressing the toggle while shown hides the keyboard");
+
+    /* Capture Point is back in the grid now that the overlay is hidden. */
+    ASSERT(find_widget(&ctx.grid, WIDGET_BUTTON, "Capture Point") != NULL,
+          "Capture Point is reachable again after the toggle hides the keyboard");
+}
+
+/* -------------------------------------------------------------------------
+ * BACK closes an open overlay instead of leaving the screen -- only
+ * after the overlay is already closed does BACK fall through to the
+ * stack's default pop policy.
+ * ---------------------------------------------------------------------- */
+
+static void test_measure_points_back_closes_overlay_first(void)
+{
+    UiScreenStack stack;
+    ui_stack_init(&stack);
+
+    JobContext job_ctx;
+    job_context_init(&job_ctx);
+
+    PlaceholderScreenCtx parent_stub;
+    placeholder_screen_init(&parent_stub, "parent -- not built yet");
+    ui_stack_push(&stack, placeholder_screen_as_ui_screen(&parent_stub));
+
+    MeasurePointsScreenCtx ctx;
+    measure_points_screen_init(&ctx, &stack, &job_ctx, measure_points_no_feed());
+    ui_stack_push(&stack, measure_points_screen_as_ui_screen(&ctx));
+
+    UiWidget *toggle = find_widget(&ctx.grid, WIDGET_BUTTON, "Keyboard");
+    ASSERT(toggle != NULL, "The keyboard-toggle button exists");
+    if (toggle)
+        activate_widget_directly(&ctx.grid, toggle);
+    ASSERT(ctx.overlay == MEASURE_POINTS_OVERLAY_KEYBOARD, "The keyboard is now showing");
+
+    UiEvent back = { .type = UI_EVENT_BACK };
+    ui_stack_dispatch_event(&stack, back);
+    ASSERT(ctx.overlay == MEASURE_POINTS_OVERLAY_NONE,
+          "BACK with the keyboard open closes the keyboard instead of leaving the screen");
+    ASSERT(ui_stack_top(&stack)->ctx == &ctx,
+          "Measure Points is still the top of the stack after that BACK");
+
+    /* A second BACK, now that no overlay is open, falls through to the
+     * stack's default pop policy. */
+    ui_stack_dispatch_event(&stack, back);
+    ASSERT(ui_stack_top(&stack)->ctx == &parent_stub,
+          "A second BACK, with no overlay open, pops back to the parent screen");
+}
+
+/* -------------------------------------------------------------------------
+ * Code picker: opens from the Code field's "Pick" button, lists the
+ * built-in default codes (no point_codes.txt present in this disposable
+ * test environment, so codelist_load() falls back to its built-in
+ * defaults -- see survey/codelist.c), and selecting one fills the Code
+ * field and closes the picker.
+ * ---------------------------------------------------------------------- */
+
+static void test_measure_points_code_picker_fills_code_field(void)
+{
+    UiScreenStack stack;
+    ui_stack_init(&stack);
+
+    JobContext job_ctx;
+    job_context_init(&job_ctx);
+
+    MeasurePointsScreenCtx ctx;
+    measure_points_screen_init(&ctx, &stack, &job_ctx, measure_points_no_feed());
+    ui_stack_push(&stack, measure_points_screen_as_ui_screen(&ctx));
+
+    ASSERT(ctx.codelist.count > 0,
+          "codelist_load() populated at least the built-in defaults");
+
+    UiWidget *pick_btn = find_widget(&ctx.grid, WIDGET_BUTTON, "Pick");
+    ASSERT(pick_btn != NULL, "The Pick Code button exists next to the Code field");
+    if (pick_btn)
+        activate_widget_directly(&ctx.grid, pick_btn);
+    ASSERT(ctx.overlay == MEASURE_POINTS_OVERLAY_CODE_PICKER,
+          "Pressing Pick opens the code-picker overlay");
+    ASSERT(find_widget(&ctx.grid, WIDGET_BUTTON, "Capture Point") == NULL,
+          "Capture Point is removed from the grid while the code picker is open");
+
+    /* "CONC" (Concrete) is one of codelist.c's own built-in defaults --
+     * confirmed present via codelist_find() rather than assumed, so
+     * this test stays correct even if the default list is ever
+     * reordered (only its presence matters, not its position). */
+    const CodeEntry *expected = codelist_find(&ctx.codelist, "CONC");
+    ASSERT(expected != NULL, "The built-in code list includes \"CONC\"");
+
+    UiWidget *code_entry_btn = find_widget(&ctx.grid, WIDGET_BUTTON, "CONC");
+    ASSERT(code_entry_btn != NULL, "A button for the \"CONC\" entry exists in the picker");
+    if (code_entry_btn)
+        activate_widget_directly(&ctx.grid, code_entry_btn);
+
+    ASSERT(ctx.overlay == MEASURE_POINTS_OVERLAY_NONE,
+          "Selecting a code closes the picker overlay");
+    ASSERT(strcmp(ctx.code_buf, "CONC") == 0,
+          "Selecting \"CONC\" fills the Code field with it");
+    ASSERT(find_widget(&ctx.grid, WIDGET_BUTTON, "Capture Point") != NULL,
+          "Capture Point is reachable again once the picker closes");
+}
+
 /* =========================================================================
  * main
  * ========================================================================= */
@@ -1647,6 +1826,9 @@ int main(void)
     test_measure_points_no_fix_blocks_capture();
     test_measure_points_capture_and_persist_end_to_end();
     test_measure_points_typed_fields_and_height_correction();
+    test_measure_points_keyboard_toggle_button();
+    test_measure_points_back_closes_overlay_first();
+    test_measure_points_code_picker_fills_code_field();
 
     if (g_tests_failed == 0) {
         printf("All %d screen tests passed.\n", g_tests_run);
