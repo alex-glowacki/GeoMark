@@ -30,9 +30,18 @@ static const char *const KB_ROW1 = "QWERTYUIOP";
 static const char *const KB_ROW2 = "ASDFGHJKL";
 static const char *const KB_ROW3 = "ZXCVBNM-_";
 
+/* KB_KEY_H/KB_GAP sized so 5 rows (4 char rows + action row) fit exactly
+ * within KEYBOARD_HEIGHT (232px): 5*43 + 4*3 = 227px, leaving a 5px
+ * margin at the very bottom of the panel. The original 46/4 sizing
+ * (5*46 + 4*4 = 246px) overflowed KEYBOARD_HEIGHT by 14px on every
+ * screen using this keyboard -- confirmed on real hardware (the action
+ * row's Space/Del/Done keys were rendered partially or fully off the
+ * bottom of the 480px-tall panel). 43px still comfortably exceeds
+ * typical minimum touch-target guidance (~40px) for a capacitive panel
+ * this size. */
 #define KB_KEY_W   40
-#define KB_KEY_H   46
-#define KB_GAP      4
+#define KB_KEY_H   43
+#define KB_GAP      3
 
 #define KB_ROW0_Y (KEYBOARD_TOP_Y + 0 * (KB_KEY_H + KB_GAP))
 #define KB_ROW1_Y (KEYBOARD_TOP_Y + 1 * (KB_KEY_H + KB_GAP))
