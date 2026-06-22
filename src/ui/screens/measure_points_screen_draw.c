@@ -2,14 +2,23 @@
  * @file ui/screens/measure_points_screen_draw.c
  * @brief Measure Points rendering: title bar, left map panel (white
  *        background, captured points plotted as black "X" markers),
- *        right status/input column (fix badge, Point name / Code /
- *        Target height fields, Capture Point button, compact live-fix
- *        readout -- all rendered generically via ui_grid_render() for
- *        the text fields/button, by hand here for the badge/readout),
- *        and the on-screen keyboard filling the bottom half (also
- *        rendered generically via ui_grid_render(), since keyboard
- *        keys are plain WIDGET_BUTTON entries in the same grid -- see
- *        ui/core/keyboard.h's file-level doc comment).
+ *        right status/input column (fix badge, titled Point name /
+ *        Code / Target height fields, keyboard-toggle button, Capture
+ *        Point, compact live-fix readout), and -- when an overlay is
+ *        open -- a solid backdrop covering the bottom of the panel
+ *        with either the on-screen keyboard or the code-picker list
+ *        rendered on top of it.
+ *
+ * The map panel and status/input column are FIXED at full panel height
+ * (PANEL_TOP_Y..PANEL_BOTTOM_Y) regardless of overlay state -- they are
+ * drawn first, every frame, exactly the same whether or not an overlay
+ * is showing. The overlay backdrop is then painted over the bottom
+ * portion (MP_OVERLAY_TOP_Y..TFT_HEIGHT) ON TOP of that, covering
+ * whatever was just drawn there; ui_grid_render() afterward draws
+ * whichever widgets are actually in the grid (base fields only when no
+ * overlay, or base fields + keyboard keys / code-picker buttons when
+ * one is open -- see measure_points_screen.c's rebuild_grid()), so the
+ * overlay's own widgets land on top of the backdrop in the same call.
  *
  * Fix badge color conventions deliberately mirror ui/tft/screen.c's
  * badge_color()/badge_label() exactly (same colors, same five-way
@@ -21,7 +30,7 @@
  *
  * Map panel colors: white background, black markers/text (explicit
  * design decision -- distinguishes the map visually from the dark
- * status/input column and the dark keyboard below it).
+ * status/input column and the dark overlay backdrop).
  */
 
 #define _GNU_SOURCE
@@ -52,14 +61,11 @@
 #define MAP_MARGIN       4
 
 #define PANEL_DIVIDER_COL TFT_DKGRAY
+#define OVERLAY_BG_COL    TFT_BLACK /* matches UI_COL_BG in widget_draw.c --
+                                     * the keyboard/button widgets drawn on
+                                     * top already assume this backdrop */
 
 #define FIELD_LABEL_X  (STATUS_PANEL_X + MP_FIELD_MARGIN)
-
-/* Compact live-fix readout -- small text, two rows, see this screen's
- * field-crew-decided priority order (badge/inputs/Capture all take
- * priority over this readout's size). */
-#define READOUT_ROW1_Y MP_READOUT_Y
-#define READOUT_ROW2_Y (MP_READOUT_Y + 16)
 
 /* -------------------------------------------------------------------------
  * Fix badge -- mirrors ui/tft/screen.c's badge_color()/badge_label().
@@ -122,7 +128,8 @@ static const char *status_text(MeasurePointsStatus status)
  * doc comment) -- every point renders as an unconnected "X" today.
  * Background is white, markers/any future map text are black -- the
  * map panel is visually distinct from the dark status/input column and
- * keyboard by design.
+ * overlay backdrop by design. This panel is FIXED full-height and
+ * never shrinks for the overlay (see this file's top-of-file comment).
  * ---------------------------------------------------------------------- */
 
 static void draw_map_panel(const MeasurePointsScreenCtx *ctx, uint16_t map_x, uint16_t map_y,
@@ -218,20 +225,27 @@ static void draw_map_panel(const MeasurePointsScreenCtx *ctx, uint16_t map_x, ui
 }
 
 /* -------------------------------------------------------------------------
- * Status/input column -- badge + compact live-fix readout. The three
- * text fields and the Capture Point button are NOT drawn here -- they
- * are real WIDGET_TEXT_FIELD/WIDGET_BUTTON entries in ctx->grid,
- * rendered generically by the ui_grid_render() call at the end of
- * measure_points_screen_render() below, same as every other field on
- * every other screen in this codebase.
+ * Status/input column -- badge, field title labels, and the compact
+ * live-fix readout. The text fields themselves, the Pick/Keyboard
+ * toggle/Capture Point buttons, and any overlay's widgets are NOT drawn
+ * here -- they are real grid widgets, rendered generically by the
+ * ui_grid_render() call at the end of measure_points_screen_render()
+ * below, same as every other field on every other screen in this
+ * codebase. This is FIXED full-height and drawn identically regardless
+ * of overlay state (see this file's top-of-file comment).
  * ---------------------------------------------------------------------- */
+
+static void draw_field_label(uint16_t y, const char *text)
+{
+    display_draw_string(FIELD_LABEL_X, y, text, TFT_GRAY, TFT_BLACK, 1);
+}
 
 static void draw_status_column(const MeasurePointsScreenCtx *ctx)
 {
     char buf[56];
 
     /* Divider between map and status/input column, spanning the full
-     * height down to the keyboard boundary. */
+     * panel height. */
     display_fill_rect(STATUS_PANEL_X - 2, PANEL_TOP_Y, 2,
                       (uint16_t)(PANEL_BOTTOM_Y - PANEL_TOP_Y), PANEL_DIVIDER_COL);
 
@@ -241,29 +255,56 @@ static void draw_status_column(const MeasurePointsScreenCtx *ctx)
     /* Fix badge */
     uint16_t bw = (uint16_t)(STATUS_PANEL_W - 16);
     display_fill_rect(STATUS_PANEL_X + 8, MP_BADGE_Y, bw, MP_BADGE_H, badge_color(ft));
-    display_draw_string(STATUS_PANEL_X + 14, (uint16_t)(MP_BADGE_Y + 6), badge_label(ft),
+    display_draw_string(STATUS_PANEL_X + 14, (uint16_t)(MP_BADGE_Y + 7), badge_label(ft),
                         TFT_BLACK, badge_color(ft), 1);
 
-    /* Compact live-fix readout -- small text, two rows. Lowest
-     * priority in this column's vertical budget (see
-     * measure_points_screen.h's row-math doc comment), so it shrinks
-     * first: a single combined line per row rather than the larger
-     * separate labeled rows the original (pre-keyboard) layout had. */
+    /* Field title labels -- same "label drawn above the field" pattern
+     * job_create_screen.c's WIDGET_LABEL rows use, except these are
+     * hand-drawn strings rather than grid WIDGET_LABEL entries: the
+     * grid here gets rebuilt per overlay state (rebuild_grid()), and a
+     * static title that never changes regardless of overlay has no
+     * reason to be a widget that gets torn down and re-added on every
+     * rebuild. */
+    draw_field_label(MP_NAME_LABEL_Y, "Point name:");
+    draw_field_label(MP_CODE_LABEL_Y, "Code:");
+    draw_field_label(MP_HEIGHT_LABEL_Y, "Target height (ft):");
+
+    /* Compact live-fix readout, below Capture Point. */
+    uint16_t readout_row1 = MP_READOUT_Y;
+    uint16_t readout_row2 = (uint16_t)(MP_READOUT_Y + 16);
+    uint16_t readout_row3 = (uint16_t)(MP_READOUT_Y + 32);
+
     if (!pos->valid) {
-        display_draw_string(FIELD_LABEL_X, READOUT_ROW1_Y, "Waiting for fix...",
+        display_draw_string(FIELD_LABEL_X, readout_row1, "Waiting for fix...",
                             TFT_GRAY, TFT_BLACK, 1);
     } else {
         snprintf(buf, sizeof(buf), "%.6f, %.6f", pos->lat, pos->lon);
-        display_draw_string(FIELD_LABEL_X, READOUT_ROW1_Y, buf, TFT_WHITE, TFT_BLACK, 1);
+        display_draw_string(FIELD_LABEL_X, readout_row1, buf, TFT_WHITE, TFT_BLACK, 1);
 
         snprintf(buf, sizeof(buf), "Alt %.1fft  HDOP %.1f  Sats %02u",
                 gm_m_to_intl_ft(pos->alt), pos->hdop, (unsigned)pos->num_sats);
-        display_draw_string(FIELD_LABEL_X, READOUT_ROW2_Y, buf, TFT_WHITE, TFT_BLACK, 1);
+        display_draw_string(FIELD_LABEL_X, readout_row2, buf, TFT_WHITE, TFT_BLACK, 1);
     }
 
     snprintf(buf, sizeof(buf), "Points captured: %u", ctx->points.count);
-    display_draw_string(FIELD_LABEL_X, (uint16_t)(READOUT_ROW2_Y + 16), buf,
-                        TFT_CYAN, TFT_BLACK, 1);
+    display_draw_string(FIELD_LABEL_X, readout_row3, buf, TFT_CYAN, TFT_BLACK, 1);
+}
+
+/* -------------------------------------------------------------------------
+ * Overlay backdrop -- a solid fill covering the bottom of the panel
+ * (MP_OVERLAY_TOP_Y to TFT_HEIGHT, full width) when either overlay is
+ * showing, painted AFTER the fixed map/status layout above so it
+ * cleanly covers whatever was drawn there. Matches UI_COL_BG
+ * (widget_draw.c) exactly so the keyboard's own button widgets (which
+ * paint their own dark-gray rects, but rely on a matching black
+ * backdrop in the gaps between keys) look identical to how they
+ * already render on job_create_screen.c.
+ * ---------------------------------------------------------------------- */
+
+static void draw_overlay_backdrop(void)
+{
+    display_fill_rect(0, MP_OVERLAY_TOP_Y, TFT_WIDTH,
+                      (uint16_t)(TFT_HEIGHT - MP_OVERLAY_TOP_Y), OVERLAY_BG_COL);
 }
 
 /* -------------------------------------------------------------------------
@@ -289,6 +330,8 @@ void measure_points_screen_render(void *raw_ctx)
         display_draw_string(mx, STATUS_MSG_Y, msg, TFT_ORANGE, TFT_BLACK, 1);
     }
 
+    /* Fixed layout -- always drawn at full panel height, regardless of
+     * overlay state (see this file's top-of-file comment). */
     uint16_t map_x = 0;
     uint16_t map_y = PANEL_TOP_Y;
     uint16_t map_w = (uint16_t)(STATUS_PANEL_X - 4);
@@ -297,8 +340,15 @@ void measure_points_screen_render(void *raw_ctx)
 
     draw_status_column(ctx);
 
-    /* Renders the three text fields, the Capture Point button, AND the
-     * on-screen keyboard's keys -- all real widgets in ctx->grid (see
-     * this file's own doc comment). */
+    /* Overlay backdrop, painted on top of the fixed layout, only when
+     * an overlay is actually open. */
+    if (ctx->overlay != MEASURE_POINTS_OVERLAY_NONE)
+        draw_overlay_backdrop();
+
+    /* Renders whichever widgets are currently in ctx->grid -- base
+     * fields/buttons only when no overlay is open, or base fields plus
+     * the keyboard's keys / code-picker's buttons when one is (see
+     * measure_points_screen.c's rebuild_grid()). Drawn last so overlay
+     * widgets land on top of the backdrop just painted above. */
     ui_grid_render(&ctx->grid);
 }
