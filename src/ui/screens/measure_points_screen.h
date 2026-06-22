@@ -1,16 +1,55 @@
 /**
  * @file ui/screens/measure_points_screen.h
  * @brief Measure Points — the screen Job Create and Open Existing Job
- *        both push into. Layout: left ~2/3 a live map panel plotting
+ *        both push into. Layout: left 2/3 a live map panel plotting
  *        captured points (white background, black markers/text), right
- *        ~1/3 a fix badge, Point name / Code / Target height fields,
- *        the Capture Point action, and a compact live-fix readout --
- *        all stacked into that one column, above an always-visible
- *        on-screen keyboard filling the bottom KEYBOARD_HEIGHT pixels
- *        (same convention job_create_screen.h established: the map
- *        panel keeps its full left-2/3 width and height down to
- *        KEYBOARD_TOP_Y -- only the right column's vertical budget is
- *        tight, not the map's).
+ *        1/3 a fix badge, Point name / Code / Target height fields
+ *        (each with a title label, same convention job_create_screen.h
+ *        established), the Capture Point action, and a compact live-fix
+ *        readout. This layout is FIXED at full panel height (40 to 472)
+ *        at all times -- unlike job_create_screen.h/new_project_screen.h,
+ *        which permanently reserve the bottom KEYBOARD_HEIGHT pixels for
+ *        an always-visible keyboard, Measure Points needs its map and
+ *        readout to never shrink to make room for one (real-time RTK
+ *        status and the map are the primary view; typing is occasional).
+ *
+ * Keyboard and code-picker are OVERLAYS, not part of the fixed layout:
+ * both render on top of the bottom portion of the existing screen,
+ * covering whatever was drawn there, and are shown/hidden rather than
+ * permanently occupying space. Only one overlay is visible at a time
+ * (showing one hides the other). See MeasurePointsOverlay below.
+ *
+ *   - Keyboard shows automatically when Point name, Code, or Target
+ *     height is activated; can also be toggled directly via a small
+ *     dedicated button; hides via its own Done key or the same toggle
+ *     button. While the keyboard (or the code picker) is shown, it
+ *     replaces the screen's own focusable widgets in the grid entirely
+ *     -- see the grid-rebuild paragraph below -- which means Capture
+ *     Point is simply not present to be pressed until an overlay is
+ *     explicitly closed. This is a deliberate field-safety measure:
+ *     the keyboard must be hidden (Done, or the toggle) before Capture
+ *     Point is reachable at all, so a shot can never be taken with the
+ *     keyboard still covering the screen.
+ *   - Code picker shows when the Code field's "Pick Code" button is
+ *     pressed; tapping an entry in the list fills the Code field and
+ *     hides the picker. Built on survey/codelist.h's existing CodeList/
+ *     codelist_load() -- read-only reuse of the same point_codes.txt
+ *     list the legacy ui/client.c flow already loads (see this header's
+ *     own doc comment on why reusing read-only shared data, as opposed
+ *     to SurveyPoint/SurveySession's session *behavior*, is safe; no
+ *     coupling to the legacy capture flow's lifecycle is introduced).
+ *     The Code field remains a free-typed WIDGET_TEXT_FIELD regardless
+ *     -- picking a code is optional, never required.
+ *
+ * Because the overlay and the screen's own fields can't both be
+ * focusable at once (the d-pad's Up/Down/Center has no way to express
+ * "navigate within the overlay only"), the grid is rebuilt (ui_grid_init()
+ * + re-add) every time overlay visibility changes -- same "tear down and
+ * re-add the current widget set" pattern open_job_screen.c's
+ * rebuild_job_list() already established for its own dynamic widget set.
+ * Hidden overlay widgets are therefore never in the grid to begin with,
+ * not merely skipped by some visibility flag ui_grid_move_focus() would
+ * otherwise need to understand (no such mechanism exists in widget.h).
  *
  * Reached via JobContext (job_context.h), not a per-push payload --
  * same reasoning as project_context.h/job_context.h's own doc comments:
@@ -22,13 +61,9 @@
  * Point metadata entry: Point name, Code, and Target height are typed
  * BEFORE Capture Point is pressed -- whatever is in those three fields
  * at the moment Capture fires is what gets attached to that point (see
- * on_capture_point() in the .c file). This mirrors how every other
- * field on this screen already works (the keyboard feeds whichever
- * field is currently active, same six-field pattern
- * job_create_screen.h established) and matches standard RTK field
- * practice: target height in particular has to be correct *before* the
- * shot, since it directly corrects the measured elevation (see
- * measure_points.h's MeasurePoint doc comment).
+ * on_capture_point() in the .c file). Target height in particular has
+ * to be correct *before* the shot, since it directly corrects the
+ * measured elevation (see measure_points.h's MeasurePoint doc comment).
  *
  * Point name auto-increment: if, at the moment Capture succeeds, the
  * Point name field's content parses entirely as a non-negative integer
@@ -36,8 +71,7 @@
  * endptr technique as any other "is this string purely numeric"
  * check -- the field is advanced to that integer + 1 for the next shot
  * ("1" -> "2"). Any non-purely-numeric name (e.g. "BENCHMARK_A") is
- * left untouched, since there's no sane "next" value for it -- this is
- * the "unless changed manually" half of the auto-increment rule.
+ * left untouched, since there's no sane "next" value for it.
  *
  * Target height unit: entered and displayed in feet (international
  * foot, matching units.h's existing convention that vertical
@@ -47,8 +81,7 @@
  * (which is meters, matching this codebase's all-internal-SI
  * convention). Persists across captures by design (typed once, stays
  * until changed) -- a field crew's rod height rarely changes during a
- * session, so resetting it every shot would just mean re-typing the
- * same number repeatedly.
+ * session.
  *
  * Navigation note: the physical d-pad's Right button is documented
  * (project memory) as currently-unreliable hardware, and Left is
@@ -76,6 +109,7 @@
 #include "collector/job_metadata.h"
 #include "collector/measure_points.h"
 #include "geomark.h"
+#include "survey/codelist.h"
 #include "ui/core/keyboard.h"
 #include "ui/core/screen_stack.h"
 #include "ui/core/widget.h"
@@ -165,6 +199,26 @@ typedef enum {
     MEASURE_POINTS_FIELD_HEIGHT,
 } MeasurePointsActiveField;
 
+/**
+ * Which overlay (if any) currently owns the bottom portion of the
+ * screen and the grid's focusable widget set. NONE means the screen's
+ * own three fields + Pick Code + Capture Point + keyboard-toggle button
+ * are what's in the grid; KEYBOARD/CODE_PICKER mean that overlay's
+ * widgets replace them until hidden. Mutually exclusive by construction
+ * (showing one always hides the other first, see show_keyboard()/
+ * show_code_picker() in the .c file) -- there is no UI for both at once.
+ */
+typedef enum {
+    MEASURE_POINTS_OVERLAY_NONE = 0,
+    MEASURE_POINTS_OVERLAY_KEYBOARD,
+    MEASURE_POINTS_OVERLAY_CODE_PICKER,
+} MeasurePointsOverlay;
+
+/** Upper bound on code-picker list entries shown per screen -- matches
+ *  CODELIST_MAX_ENTRIES (survey/codelist.h), since the picker can never
+ *  show more entries than the underlying CodeList holds regardless. */
+#define MEASURE_POINTS_CODE_PICKER_MAX CODELIST_MAX_ENTRIES
+
 typedef struct {
     /* MUST be first -- see ui/core/keyboard.h's file-level doc comment. */
     UiKeyboardTarget kb;
@@ -198,6 +252,12 @@ typedef struct {
     size_t height_len;
 
     MeasurePointsActiveField active_field;
+    MeasurePointsOverlay overlay;
+
+    /** Loaded once at init via codelist_load() -- read-only point-code
+     *  list shared with the legacy survey flow's own loader (see this
+     *  header's file-level doc comment on why this reuse is safe). */
+    CodeList codelist;
 
     MeasurePointsStatus status;
 } MeasurePointsScreenCtx;
@@ -220,48 +280,95 @@ UiScreen measure_points_screen_as_ui_screen(MeasurePointsScreenCtx *ctx);
 
 /* -------------------------------------------------------------------------
  * Layout constants shared between this screen's logic (grid widget
- * positions) and measure_points_screen_draw.c (panel/divider/keyboard
+ * positions) and measure_points_screen_draw.c (panel/divider/overlay
  * boundary rendering). Literal values rather than TFT_WIDTH/TFT_HEIGHT
  * arithmetic, so this header has no ui/tft/display.h dependency -- same
  * convention ui/core/keyboard.h's own KEYBOARD_HEIGHT already
- * established (see that header's comment: the value is documented as
- * derived from TFT_HEIGHT, not computed from it at the preprocessor
- * level here).
+ * established.
  *
  *   STATUS_PANEL_W/_X : right third of TFT_WIDTH (800) is the status/
- *                       input panel; everything left of it (full height
- *                       down to KEYBOARD_TOP_Y) is the map panel.
- *   PANEL_TOP_Y/_BOTTOM_Y : vertical extent the map panel and the
- *                       status/input column share -- PANEL_BOTTOM_Y is
- *                       KEYBOARD_TOP_Y (248, from ui/core/keyboard.h),
- *                       not TFT_HEIGHT, since the keyboard now owns the
- *                       bottom half of the panel on this screen (it did
- *                       not in the original, keyboard-less version of
- *                       this layout).
+ *                       input panel; everything left of it is the map
+ *                       panel. Both span the FULL panel height
+ *                       (PANEL_TOP_Y to PANEL_BOTTOM_Y) at all times --
+ *                       unlike the prior keyboard-reserves-space layout,
+ *                       this no longer depends on KEYBOARD_TOP_Y.
+ *   OVERLAY_TOP_Y/_HEIGHT : the region the keyboard/code-picker overlay
+ *                       covers when shown -- bottom third of the panel,
+ *                       drawn ON TOP of whatever the fixed layout
+ *                       already rendered there, not a layout region the
+ *                       fixed content avoids.
  *
- * Row math for the status/input column (208px of vertical budget,
- * PANEL_TOP_Y=40 to PANEL_BOTTOM_Y=248): badge, three fields, Capture
- * button, and a compact live-fix readout, in that priority order
- * (explicit field-crew decision -- the live readout is the thing most
- * willing to shrink, not the inputs needed to actually shoot a point).
+ * Row math for the status/input column (PANEL_TOP_Y=40 to
+ * PANEL_BOTTOM_Y=472, 432px of vertical budget -- this is now the FULL
+ * original budget the keyboard used to eat into, not 208px): badge,
+ * three labeled fields with title labels above each (matching
+ * job_create_screen.h's label-above-field convention), Pick Code button
+ * beside the Code field, a keyboard-toggle button, Capture Point, and a
+ * live-fix readout, in that explicit top-to-bottom order. Capture Point
+ * sits BELOW the keyboard toggle, not above it, by design: per this
+ * screen's own UX decision, the keyboard overlay must be explicitly
+ * hidden (its own Done key or the toggle button) before Capture Point
+ * is reachable at all -- both the keyboard and the code picker are
+ * removed from the grid's focusable set while shown (see
+ * MeasurePointsOverlay's doc comment), so Capture Point is simply not
+ * present to be pressed until an overlay is closed. This replaces an
+ * earlier "Capture auto-hides the keyboard" design that would have
+ * needed Capture to sit ABOVE the overlay region (y < 248) to remain
+ * reachable while the keyboard was open -- moot now, since Capture is
+ * never in the grid at the same time as the keyboard regardless of its
+ * Y position.
  * ---------------------------------------------------------------------- */
 
 #define STATUS_PANEL_W 266 /* TFT_WIDTH (800) / 3 */
 #define STATUS_PANEL_X 534 /* TFT_WIDTH (800) - STATUS_PANEL_W */
 #define PANEL_TOP_Y 40
-#define PANEL_BOTTOM_Y 248 /* KEYBOARD_TOP_Y, ui/core/keyboard.h */
+#define PANEL_BOTTOM_Y 472 /* TFT_HEIGHT (480) - 8 */
 
 #define MP_FIELD_MARGIN 8
-#define MP_FIELD_W 250 /* STATUS_PANEL_W - 2 * MP_FIELD_MARGIN */
-#define MP_FIELD_H 22
+#define MP_LABEL_H 14
+#define MP_FIELD_H 24
 
 #define MP_BADGE_Y 44
-#define MP_BADGE_H 26
-#define MP_NAME_Y 74
-#define MP_CODE_Y 100
-#define MP_HEIGHT_Y 126
-#define MP_CAPTURE_Y 152
-#define MP_CAPTURE_H 28
-#define MP_READOUT_Y 186
+#define MP_BADGE_H 28
+
+#define MP_NAME_LABEL_Y 82
+#define MP_NAME_Y (MP_NAME_LABEL_Y + MP_LABEL_H)
+#define MP_NAME_W 250 /* STATUS_PANEL_W - 2*MP_FIELD_MARGIN */
+
+#define MP_CODE_LABEL_Y (MP_NAME_Y + MP_FIELD_H + 6)
+#define MP_CODE_Y (MP_CODE_LABEL_Y + MP_LABEL_H)
+#define MP_CODE_W 168 /* leaves room for the Pick Code button beside it */
+#define MP_PICK_CODE_X (STATUS_PANEL_X + MP_FIELD_MARGIN + MP_CODE_W + 6)
+#define MP_PICK_CODE_W 76 /* MP_NAME_W - MP_CODE_W - 6 */
+
+#define MP_HEIGHT_LABEL_Y (MP_CODE_Y + MP_FIELD_H + 6)
+#define MP_HEIGHT_Y (MP_HEIGHT_LABEL_Y + MP_LABEL_H)
+#define MP_HEIGHT_W 160 /* leaves room for the ft unit label beside it */
+
+#define MP_KEYBOARD_TOGGLE_Y (MP_HEIGHT_Y + MP_FIELD_H + 10)
+#define MP_KEYBOARD_TOGGLE_H 26
+
+#define MP_CAPTURE_Y (MP_KEYBOARD_TOGGLE_Y + MP_KEYBOARD_TOGGLE_H + 10)
+#define MP_CAPTURE_H 32
+
+#define MP_READOUT_Y (MP_CAPTURE_Y + MP_CAPTURE_H + 10)
+
+/* -------------------------------------------------------------------------
+ * Overlay region -- matches ui/core/keyboard.h's own fixed footprint
+ * exactly (KEYBOARD_TOP_Y=248, KEYBOARD_HEIGHT=232) rather than a
+ * custom shorter region, since keyboard_add_to_grid() has no parameter
+ * to render at a different position/height -- it always lays its rows
+ * out starting at KEYBOARD_TOP_Y (see that header/source). Using the
+ * same footprint here means the keyboard module itself needs zero
+ * changes; the code picker (built fresh for this screen, not from a
+ * shared module) deliberately reuses the identical region so the two
+ * overlays look consistent and share one set of draw-time boundary
+ * constants. Covers the bottom half of the panel ON TOP of whatever
+ * the fixed map/status layout already drew there -- the fixed layout
+ * itself never shrinks to make room.
+ * ---------------------------------------------------------------------- */
+
+#define MP_OVERLAY_TOP_Y 248  /* KEYBOARD_TOP_Y, ui/core/keyboard.h */
+#define MP_OVERLAY_HEIGHT 232 /* KEYBOARD_HEIGHT, ui/core/keyboard.h */
 
 #endif /* GEOMARK_UI_SCREENS_MEASURE_POINTS_SCREEN_H */

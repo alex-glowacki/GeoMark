@@ -5,6 +5,15 @@
  *        plain constants, not function calls -- same convention
  *        job_create_screen.c already uses) -- stays unit-testable on
  *        host.
+ *
+ * Grid rebuild model: rebuild_grid() is the single source of truth for
+ * what's currently focusable. It is called from init, on_enter, and
+ * every show_keyboard()/hide_keyboard()/show_code_picker()/
+ * hide_code_picker(). There is exactly one grid; its contents change
+ * based on ctx->overlay, never two grids or a visibility flag
+ * ui_grid_move_focus() would need to understand (no such mechanism
+ * exists in widget.h) -- see measure_points_screen.h's file-level doc
+ * comment for the full rationale.
  */
 
 #define _GNU_SOURCE
@@ -23,7 +32,7 @@
 /* -------------------------------------------------------------------------
  * Layout constants shared with measure_points_screen_draw.c live in
  * measure_points_screen.h (STATUS_PANEL_W/_X, PANEL_TOP_Y/_BOTTOM_Y,
- * MP_*) -- see that header for why.
+ * MP_*, MP_OVERLAY_*) -- see that header for why.
  * ---------------------------------------------------------------------- */
 
 /* -------------------------------------------------------------------------
@@ -44,9 +53,24 @@ RtkFeed measure_points_no_feed(void)
 }
 
 /* -------------------------------------------------------------------------
+ * Forward declarations -- rebuild_grid() and the overlay show/hide
+ * functions are mutually referential (activating a field shows the
+ * keyboard, which calls rebuild_grid(), which re-adds the field
+ * widgets whose on_activate callbacks call back into the show/hide
+ * functions).
+ * ---------------------------------------------------------------------- */
+
+static void rebuild_grid(MeasurePointsScreenCtx *ctx);
+static void show_keyboard(MeasurePointsScreenCtx *ctx);
+static void hide_keyboard(MeasurePointsScreenCtx *ctx);
+
+/* -------------------------------------------------------------------------
  * Keyboard field switching -- same pattern job_create_screen.c's
  * set_active_field() already established for its six fields, here for
- * this screen's three (Point name, Code, Target height).
+ * this screen's three (Point name, Code, Target height). Activating
+ * any of the three also shows the keyboard automatically -- see this
+ * header's file-level doc comment on the dual show triggers (auto on
+ * field activation, explicit via the toggle button).
  * ---------------------------------------------------------------------- */
 
 static void set_active_field(MeasurePointsScreenCtx *ctx, MeasurePointsActiveField field)
@@ -80,24 +104,146 @@ static void set_active_field(MeasurePointsScreenCtx *ctx, MeasurePointsActiveFie
 static void on_name_activate(UiWidget *self, void *screen_ctx)
 {
     (void)self;
-    set_active_field((MeasurePointsScreenCtx *)screen_ctx, MEASURE_POINTS_FIELD_NAME);
+    MeasurePointsScreenCtx *ctx = (MeasurePointsScreenCtx *)screen_ctx;
+    set_active_field(ctx, MEASURE_POINTS_FIELD_NAME);
+    show_keyboard(ctx);
 }
 static void on_code_activate(UiWidget *self, void *screen_ctx)
 {
     (void)self;
-    set_active_field((MeasurePointsScreenCtx *)screen_ctx, MEASURE_POINTS_FIELD_CODE);
+    MeasurePointsScreenCtx *ctx = (MeasurePointsScreenCtx *)screen_ctx;
+    set_active_field(ctx, MEASURE_POINTS_FIELD_CODE);
+    show_keyboard(ctx);
 }
 static void on_height_activate(UiWidget *self, void *screen_ctx)
 {
     (void)self;
-    set_active_field((MeasurePointsScreenCtx *)screen_ctx, MEASURE_POINTS_FIELD_HEIGHT);
+    MeasurePointsScreenCtx *ctx = (MeasurePointsScreenCtx *)screen_ctx;
+    set_active_field(ctx, MEASURE_POINTS_FIELD_HEIGHT);
+    show_keyboard(ctx);
 }
 
 static void on_keyboard_done(void *screen_ctx)
 {
-    /* Same convention as Job Create / New Project: Done just drops
-     * keyboard focus, it does not submit. */
-    (void)screen_ctx;
+    /* Unlike job_create_screen.c's Done (which just drops keyboard
+     * focus but leaves the keyboard rendered), this screen's Done
+     * actually hides the overlay entirely -- the keyboard isn't
+     * permanently part of the layout here, so "done typing" means
+     * "put it away," not just "stop editing this field." */
+    hide_keyboard((MeasurePointsScreenCtx *)screen_ctx);
+}
+
+/* -------------------------------------------------------------------------
+ * Keyboard toggle button (explicit show/hide trigger, in addition to
+ * the automatic show-on-field-activate above).
+ * ---------------------------------------------------------------------- */
+
+static void on_keyboard_toggle(UiWidget *self, void *screen_ctx)
+{
+    (void)self;
+    MeasurePointsScreenCtx *ctx = (MeasurePointsScreenCtx *)screen_ctx;
+    if (ctx->overlay == MEASURE_POINTS_OVERLAY_KEYBOARD)
+        hide_keyboard(ctx);
+    else
+        show_keyboard(ctx);
+}
+
+/* -------------------------------------------------------------------------
+ * Code picker
+ *
+ * Built directly from the already-loaded ctx->codelist (codelist_load()
+ * is called once, in measure_points_screen_init() -- see this file's
+ * own header comment on why reusing this read-only data is safe).
+ * One button per code entry, same "list of buttons in a scrollable
+ * region" pattern open_job_screen.c's rebuild_job_list() already
+ * established for its own dynamic widget set -- though unlike that
+ * screen's list (which can exceed the visible area and needs a scroll
+ * region), CODELIST_MAX_ENTRIES (128) combined with the overlay's own
+ * height means this may need scrolling too for a fully-populated list;
+ * the scroll region is set up the same way regardless of how many
+ * entries actually exist, so it costs nothing when the list is short.
+ * ---------------------------------------------------------------------- */
+
+static void on_code_picked(UiWidget *self, void *screen_ctx)
+{
+    MeasurePointsScreenCtx *ctx = (MeasurePointsScreenCtx *)screen_ctx;
+    /* self->label points directly at a CodeEntry's own code[] buffer
+     * (see add_code_picker_buttons() below) -- copy it out before the
+     * grid is rebuilt and that widget (and its label pointer) stop
+     * being valid. */
+    strncpy(ctx->code_buf, self->label, sizeof(ctx->code_buf) - 1);
+    ctx->code_buf[sizeof(ctx->code_buf) - 1] = '\0';
+    ctx->code_len = strlen(ctx->code_buf);
+
+    ctx->overlay = MEASURE_POINTS_OVERLAY_NONE;
+    rebuild_grid(ctx);
+}
+
+static void on_pick_code_activate(UiWidget *self, void *screen_ctx)
+{
+    (void)self;
+    MeasurePointsScreenCtx *ctx = (MeasurePointsScreenCtx *)screen_ctx;
+    ctx->overlay = MEASURE_POINTS_OVERLAY_CODE_PICKER;
+    rebuild_grid(ctx);
+}
+
+#define MP_CODE_PICKER_ROW_H   28
+#define MP_CODE_PICKER_ROW_GAP  4
+#define MP_CODE_PICKER_MARGIN  12
+
+static void add_code_picker_buttons(MeasurePointsScreenCtx *ctx)
+{
+    uint16_t y = MP_OVERLAY_TOP_Y + 4;
+    uint16_t w = (uint16_t)(800 - 2 * MP_CODE_PICKER_MARGIN); /* TFT_WIDTH literal,
+                                                                * same convention
+                                                                * keyboard.h itself
+                                                                * uses for its own
+                                                                * row math (no
+                                                                * display.h dep) */
+
+    ui_grid_set_scroll_region(&ctx->grid,
+        (UiRect){0, MP_OVERLAY_TOP_Y, 800, MP_OVERLAY_HEIGHT});
+
+    for (uint32_t i = 0; i < ctx->codelist.count; i++) {
+        const CodeEntry *entry = codelist_get(&ctx->codelist, i);
+        if (!entry)
+            break;
+
+        UiRect r = { MP_CODE_PICKER_MARGIN, y, w, MP_CODE_PICKER_ROW_H };
+        /* entry->code is owned by ctx->codelist (loaded once at init,
+         * outlives every widget built from it) -- same "caller-owned
+         * label that outlives the widget" convention widget.h's
+         * file-level doc comment requires, not a transient buffer. */
+        UiWidget *btn = ui_grid_add_button(&ctx->grid, r, entry->code, on_code_picked);
+        ui_widget_mark_scrollable(btn);
+        y = (uint16_t)(y + MP_CODE_PICKER_ROW_H + MP_CODE_PICKER_ROW_GAP);
+    }
+}
+
+/* -------------------------------------------------------------------------
+ * Overlay show/hide -- single entry points; both are idempotent (hiding
+ * an already-hidden overlay, or showing an already-shown one, is a
+ * no-op aside from the redundant rebuild) and mutually exclusive
+ * (showing one always clears the other first).
+ * ---------------------------------------------------------------------- */
+
+static void show_keyboard(MeasurePointsScreenCtx *ctx)
+{
+    ctx->overlay = MEASURE_POINTS_OVERLAY_KEYBOARD;
+    rebuild_grid(ctx);
+}
+
+static void hide_keyboard(MeasurePointsScreenCtx *ctx)
+{
+    /* Idempotent by construction: if overlay is already NONE or is the
+     * code picker (not the keyboard), this still safely lands on NONE
+     * -- there is no path here that could ever re-show a hidden
+     * keyboard, satisfying the "hide is a one-way action, never a
+     * toggle" requirement this function's callers (Done, the toggle
+     * button when already showing) depend on. */
+    if (ctx->overlay == MEASURE_POINTS_OVERLAY_KEYBOARD)
+        ctx->overlay = MEASURE_POINTS_OVERLAY_NONE;
+    rebuild_grid(ctx);
 }
 
 /* -------------------------------------------------------------------------
@@ -137,6 +283,12 @@ static void advance_name_if_numeric(MeasurePointsScreenCtx *ctx)
 
 /* -------------------------------------------------------------------------
  * Capture
+ *
+ * Only reachable when ctx->overlay == MEASURE_POINTS_OVERLAY_NONE --
+ * the Capture Point button is not added to the grid at all otherwise
+ * (see rebuild_grid() below), so this callback firing already implies
+ * the keyboard/code-picker were hidden first. No additional "is an
+ * overlay open" guard is needed here as a result.
  * ---------------------------------------------------------------------- */
 
 static void on_capture_point(UiWidget *self, void *screen_ctx)
@@ -203,6 +355,75 @@ static void on_capture_point(UiWidget *self, void *screen_ctx)
 }
 
 /* -------------------------------------------------------------------------
+ * Grid rebuild -- single source of truth for the currently focusable
+ * widget set, driven entirely by ctx->overlay. Called from init,
+ * on_enter, and every overlay show/hide. See this file's top-of-file
+ * doc comment for the full rationale.
+ * ---------------------------------------------------------------------- */
+
+static void add_base_widgets(MeasurePointsScreenCtx *ctx)
+{
+    UiRect name_r   = { STATUS_PANEL_X + MP_FIELD_MARGIN, MP_NAME_Y,   MP_NAME_W, MP_FIELD_H };
+    UiRect code_r   = { STATUS_PANEL_X + MP_FIELD_MARGIN, MP_CODE_Y,   MP_CODE_W, MP_FIELD_H };
+    UiRect pick_r   = { MP_PICK_CODE_X, MP_CODE_Y, MP_PICK_CODE_W, MP_FIELD_H };
+    UiRect height_r = { STATUS_PANEL_X + MP_FIELD_MARGIN, MP_HEIGHT_Y, MP_HEIGHT_W, MP_FIELD_H };
+    UiRect kb_toggle_r = { STATUS_PANEL_X + MP_FIELD_MARGIN, MP_KEYBOARD_TOGGLE_Y,
+                          MP_NAME_W, MP_KEYBOARD_TOGGLE_H };
+
+    UiWidget *name_w = ui_grid_add_text_field(&ctx->grid, name_r, "Point name",
+                                              ctx->name_buf, sizeof(ctx->name_buf));
+    if (name_w) name_w->on_activate = on_name_activate;
+
+    UiWidget *code_w = ui_grid_add_text_field(&ctx->grid, code_r, "Code",
+                                              ctx->code_buf, sizeof(ctx->code_buf));
+    if (code_w) code_w->on_activate = on_code_activate;
+
+    ui_grid_add_button(&ctx->grid, pick_r, "Pick", on_pick_code_activate);
+
+    UiWidget *height_w = ui_grid_add_text_field(&ctx->grid, height_r, "Target height",
+                                                ctx->height_buf, sizeof(ctx->height_buf));
+    if (height_w) height_w->on_activate = on_height_activate;
+
+    ui_grid_add_button(&ctx->grid, kb_toggle_r, "Keyboard", on_keyboard_toggle);
+
+    /* Capture Point is intentionally NOT added here -- see this file's
+     * header comment on why it only exists in the grid when no overlay
+     * is open. Added by rebuild_grid() itself, conditionally. */
+}
+
+static void rebuild_grid(MeasurePointsScreenCtx *ctx)
+{
+    /* The grid has no "remove all widgets" operation (widget.h has no
+     * such function -- grids are append-only by design, see
+     * UI_GRID_MAX_WIDGETS's fixed-capacity model), so this
+     * re-initializes the whole grid via ui_grid_init() before re-adding
+     * the current overlay's widget set -- same pattern
+     * open_job_screen.c's rebuild_job_list() already established. */
+    ui_grid_init(&ctx->grid, ctx);
+
+    switch (ctx->overlay) {
+    case MEASURE_POINTS_OVERLAY_KEYBOARD:
+        add_base_widgets(ctx);
+        keyboard_add_to_grid(&ctx->grid, &ctx->kb_labels);
+        break;
+
+    case MEASURE_POINTS_OVERLAY_CODE_PICKER:
+        add_base_widgets(ctx);
+        add_code_picker_buttons(ctx);
+        break;
+
+    case MEASURE_POINTS_OVERLAY_NONE:
+    default: {
+        add_base_widgets(ctx);
+        UiRect capture_r = { STATUS_PANEL_X + MP_FIELD_MARGIN, MP_CAPTURE_Y,
+                             MP_NAME_W, MP_CAPTURE_H };
+        ui_grid_add_button(&ctx->grid, capture_r, "Capture Point", on_capture_point);
+        break;
+    }
+    }
+}
+
+/* -------------------------------------------------------------------------
  * Lifecycle
  * ---------------------------------------------------------------------- */
 
@@ -216,6 +437,9 @@ void measure_points_screen_init(MeasurePointsScreenCtx *ctx, UiScreenStack *stac
 
     job_metadata_defaults(&ctx->job_meta);
     measure_points_init(&ctx->points);
+    codelist_load(&ctx->codelist); /* always succeeds -- falls back to built-in
+                                    * defaults if no point_codes.txt is found,
+                                    * see codelist.h's own doc comment */
 
     /* Point names start at "1" -- the first shot of a brand-new screen
      * instance is purely-numeric by default, so auto-increment applies
@@ -226,34 +450,19 @@ void measure_points_screen_init(MeasurePointsScreenCtx *ctx, UiScreenStack *stac
     ctx->kb.on_done    = on_keyboard_done;
     ctx->kb.screen_ctx = ctx;
 
+    ctx->overlay = MEASURE_POINTS_OVERLAY_NONE;
     ui_grid_init(&ctx->grid, ctx);
-
-    UiRect name_r   = { STATUS_PANEL_X + MP_FIELD_MARGIN, MP_NAME_Y,   MP_FIELD_W, MP_FIELD_H };
-    UiRect code_r   = { STATUS_PANEL_X + MP_FIELD_MARGIN, MP_CODE_Y,   MP_FIELD_W, MP_FIELD_H };
-    UiRect height_r = { STATUS_PANEL_X + MP_FIELD_MARGIN, MP_HEIGHT_Y, MP_FIELD_W, MP_FIELD_H };
-    UiRect capture_r = { STATUS_PANEL_X + MP_FIELD_MARGIN, MP_CAPTURE_Y,
-                         MP_FIELD_W, MP_CAPTURE_H };
-
-    UiWidget *name_w = ui_grid_add_text_field(&ctx->grid, name_r, "Point name",
-                                              ctx->name_buf, sizeof(ctx->name_buf));
-    if (name_w) name_w->on_activate = on_name_activate;
-
-    UiWidget *code_w = ui_grid_add_text_field(&ctx->grid, code_r, "Code",
-                                              ctx->code_buf, sizeof(ctx->code_buf));
-    if (code_w) code_w->on_activate = on_code_activate;
-
-    UiWidget *height_w = ui_grid_add_text_field(&ctx->grid, height_r, "Target height",
-                                                ctx->height_buf, sizeof(ctx->height_buf));
-    if (height_w) height_w->on_activate = on_height_activate;
-
-    ui_grid_add_button(&ctx->grid, capture_r, "Capture Point", on_capture_point);
+    rebuild_grid(ctx);
 
     /* Point name is the first focusable widget added -- start editing
      * it by default, same convention every keyboard-using screen in
-     * this codebase already follows (job_create_screen.c, etc.). */
+     * this codebase already follows (job_create_screen.c, etc.). Does
+     * NOT call show_keyboard() -- the keyboard starts hidden on this
+     * screen (unlike job_create_screen.c's always-visible keyboard),
+     * consistent with "the field crew sees the full map/status layout
+     * first, the keyboard only appears once they actually start
+     * typing." */
     set_active_field(ctx, MEASURE_POINTS_FIELD_NAME);
-
-    keyboard_add_to_grid(&ctx->grid, &ctx->kb_labels);
 }
 
 /**
@@ -306,6 +515,12 @@ static void measure_points_on_enter(void *raw_ctx)
 {
     MeasurePointsScreenCtx *ctx = (MeasurePointsScreenCtx *)raw_ctx;
     reload_job_data(ctx);
+    /* Re-entering the screen always starts with both overlays hidden,
+     * regardless of what was showing the last time this screen was
+     * active -- the keyboard/code-picker are momentary editing aids,
+     * not state worth preserving across a navigation round-trip. */
+    ctx->overlay = MEASURE_POINTS_OVERLAY_NONE;
+    rebuild_grid(ctx);
     ui_grid_focus_first(&ctx->grid);
 }
 
@@ -328,8 +543,20 @@ static bool measure_points_on_event(void *raw_ctx, UiEvent ev)
 {
     MeasurePointsScreenCtx *ctx = (MeasurePointsScreenCtx *)raw_ctx;
 
-    if (ev.type == UI_EVENT_BACK)
+    if (ev.type == UI_EVENT_BACK) {
+        /* If an overlay is open, BACK closes it instead of leaving the
+         * screen -- same "BACK has a local meaning before it falls
+         * through to the stack" precedent as e.g. a discard-changes
+         * prompt would use (see screen_stack.h's own doc comment on
+         * UI_EVENT_BACK), just simpler: there's nothing to confirm,
+         * just close the overlay. */
+        if (ctx->overlay != MEASURE_POINTS_OVERLAY_NONE) {
+            ctx->overlay = MEASURE_POINTS_OVERLAY_NONE;
+            rebuild_grid(ctx);
+            return true;
+        }
         return false; /* unconsumed -- stack pops back to Job Create/Open Job */
+    }
 
     return ui_grid_handle_event(&ctx->grid, ev);
 }
