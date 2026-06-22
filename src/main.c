@@ -16,8 +16,14 @@
 #include "ui/preview.h"
 #include "util/log.h"
 
-/* Default pole-top IP on the private geomark-rover WiFi network */
-#define DEFAULT_POLE_TOP_HOST  "10.0.0.1"
+/* Default pole-top IP on the private geomark-rover WiFi network --
+ * matches the rover's actual AP gateway address (same one geomark-ui.service
+ * passes explicitly via --host, and the same one used for
+ * `ssh pi@192.168.10.1`). Previously read "10.0.0.1", which was never the
+ * real address and went unnoticed only because geomark-ui.service always
+ * overrides it with --host and --ui-preview had no networking until this
+ * default was wired into it (see net/rtk_feed_client.h). */
+#define DEFAULT_POLE_TOP_HOST  "192.168.10.1"
 
 static void print_usage(const char *prog) {
     fprintf(stderr,
