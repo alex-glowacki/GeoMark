@@ -28,7 +28,9 @@ static void print_usage(const char *prog) {
             "  --mode ui      Handheld (Pi 5): receive fixes from pole-top, drive TFT\n"
             "\n"
             "  --config <path>  Config file (default: /etc/geomark/geomark.conf)\n"
-            "  --host <ip>      Pole-top IP for UI mode (default: " DEFAULT_POLE_TOP_HOST ")\n"
+            "  --host <ip>      Pole-top IP for UI mode -- both the production flow\n"
+            "                   and --ui-preview's Measure Points RTK feed use this\n"
+            "                   (default: " DEFAULT_POLE_TOP_HOST ")\n"
             "  --ui-preview     With --mode ui: run the new screen-stack UI preview\n"
             "                   (Sleep -> Main Menu -> placeholder screens) instead of\n"
             "                   the production survey flow. Manual/SSH use only --\n"
@@ -94,7 +96,7 @@ int main(int argc, char *argv[]) {
     } else if (mode == GEOMARK_MODE_ROVER) {
         ret = rover_station_run(config_path);
     } else if (ui_preview) {
-        ret = ui_preview_run();
+        ret = ui_preview_run(pole_top_host);
     } else {
         ret = ui_client_run(pole_top_host);
     }

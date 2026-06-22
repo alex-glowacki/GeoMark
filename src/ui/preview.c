@@ -13,6 +13,7 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "net/rtk_feed_client.h"
 #include "ui/core/screen_stack.h"
 #include "ui/core/touch_input.h"
 #include "ui/gpio_button.h"
@@ -74,7 +75,7 @@ static UiEvent translate_input(InputEvent ev)
     return out;
 }
 
-gm_status_t ui_preview_run(void)
+gm_status_t ui_preview_run(const char *pole_top_host)
 {
     gm_status_t ds = display_open();
     if (ds != GM_OK) {
@@ -97,6 +98,19 @@ gm_status_t ui_preview_run(void)
     if (!touch_available)
         log_warn("ui_preview: no touch device found -- running button-only");
 
+    /* --- RTK feed (Measure Points' live fix) ----------------------------- */
+    RtkFeedClient feed_client;
+    gm_status_t fs = rtk_feed_client_start(&feed_client, pole_top_host);
+    if (fs != GM_OK) {
+        log_error("ui_preview: rtk_feed_client_start failed");
+        if (touch_available)
+            touch_input_close();
+        gpio_button_close();
+        display_close();
+        return GM_ERR_IO;
+    }
+    log_info("ui_preview: connecting to rover at %s", pole_top_host);
+
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
     sa.sa_handler = handle_signal;
@@ -117,7 +131,8 @@ gm_status_t ui_preview_run(void)
     placeholder_screen_init(&stats_stub, "Stats -- not built yet");
 
     MeasurePointsScreenCtx measure_points_ctx;
-    measure_points_screen_init(&measure_points_ctx, &stack, &job_ctx, measure_points_no_feed());
+    measure_points_screen_init(&measure_points_ctx, &stack, &job_ctx,
+                               rtk_feed_client_as_feed(&feed_client));
 
     JobCreateScreenCtx job_create_ctx;
     job_create_screen_init(&job_create_ctx, &stack,
@@ -180,6 +195,7 @@ gm_status_t ui_preview_run(void)
     }
 
     log_info("ui_preview: shutting down");
+    rtk_feed_client_stop(&feed_client);
     if (touch_available)
         touch_input_close();
     gpio_button_close();

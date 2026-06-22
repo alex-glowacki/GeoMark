@@ -40,6 +40,7 @@ set(GEOMARK_SOURCES
     src/collector/export.c
     src/net/stream_server.c
     src/net/stream_client.c
+    src/net/rtk_feed_client.c
     src/survey/survey.c
     src/survey/codelist.c
     src/survey/export.c
@@ -79,7 +80,7 @@ set(GEOMARK_SOURCES
     src/util/thread.c
 )
 add_executable(geomark ${GEOMARK_SOURCES})
-# Link pthreads (required for util/thread.c, stream_server.c, stream_client.c)
+# Link pthreads (required for util/thread.c, stream_server.c, stream_client.c, rtk_feed_client.c)
 find_package(Threads REQUIRED)
 target_link_libraries(geomark PRIVATE Threads::Threads)
 # Link libm (required by collector/coords.c's trig/log/pow functions)
