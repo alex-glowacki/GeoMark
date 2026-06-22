@@ -1,10 +1,20 @@
 /**
  * @file ui/preview.h
- * @brief Manual, opt-in entry point for previewing the new screen-stack UI
- *        (Sleep -> Main Menu -> placeholder screens) on real display
- *        hardware, without touching ui/client.c's production flow.
+ * @brief Entry point for the screen-stack UI (Sleep -> Main Menu ->
+ *        Job Create/Open -> Measure Points, etc.) on real display
+ *        hardware. As of the geomark-ui.service switch, this is the
+ *        UI geomark-ui.service launches by default -- ui/client.c's
+ *        legacy button-only survey flow remains in the codebase and
+ *        runnable (geomark --mode ui --host <ip>, omitting
+ *        --ui-preview), but is no longer what the running service
+ *        executes. The "preview" name predates that switch; left as-is
+ *        for now rather than bundled into this change as a rename
+ *        (would touch every #include site and the CMakeLists entry).
  *
- * Launch manually over SSH — geomark-ui.service does NOT use this path:
+ * geomark-ui.service's ExecStart:
+ *   geomark --mode ui --host 192.168.10.1 --ui-preview
+ *
+ * Manual/SSH invocation (e.g. for testing) uses the same flag:
  *   geomark --mode ui --ui-preview [--host <ip>]
  *
  * Controls (GPIO d-pad and capacitive touch both active):

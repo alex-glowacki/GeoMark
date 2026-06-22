@@ -34,13 +34,14 @@ static void print_usage(const char *prog) {
             "  --mode ui      Handheld (Pi 5): receive fixes from pole-top, drive TFT\n"
             "\n"
             "  --config <path>  Config file (default: /etc/geomark/geomark.conf)\n"
-            "  --host <ip>      Pole-top IP for UI mode -- both the production flow\n"
-            "                   and --ui-preview's Measure Points RTK feed use this\n"
+            "  --host <ip>      Pole-top IP for UI mode -- used by both the screen-stack\n"
+            "                   UI's Measure Points RTK feed and the legacy survey flow\n"
             "                   (default: " DEFAULT_POLE_TOP_HOST ")\n"
-            "  --ui-preview     With --mode ui: run the new screen-stack UI preview\n"
-            "                   (Sleep -> Main Menu -> placeholder screens) instead of\n"
-            "                   the production survey flow. Manual/SSH use only --\n"
-            "                   geomark-ui.service never passes this flag.\n",
+            "  --ui-preview     With --mode ui: run the screen-stack UI (Sleep -> Main\n"
+            "                   Menu -> Job Create/Open -> Measure Points, etc.) instead\n"
+            "                   of the legacy button-only survey flow. geomark-ui.service\n"
+            "                   passes this flag by default as of the switch to the new\n"
+            "                   UI; omit it to fall back to the legacy flow.\n",
             prog);
 }
 
