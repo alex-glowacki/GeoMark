@@ -3,9 +3,9 @@
  * @brief Sleep / inactive screen — root of the new screen stack.
  *
  * Per geomark-ui-redesign-decisions.md §2: custom image/text (content still
- * TBD — see §5 open questions) with "tap anywhere to wake". Generalized
- * here to wake on any input at all, including a GPIO d-pad press, since the
- * DSI touch panel isn't installed yet.
+ * TBD — see §5 open questions) with "tap anywhere to wake". Touch-only
+ * input (the physical GPIO d-pad is no longer read by this UI -- see
+ * ui/preview.h's controls doc), so any tap on the screen wakes it.
  */
 
 #ifndef GEOMARK_UI_SCREENS_SLEEP_SCREEN_H

@@ -16,8 +16,6 @@
 #include "net/rtk_feed_client.h"
 #include "ui/core/screen_stack.h"
 #include "ui/core/touch_input.h"
-#include "ui/gpio_button.h"
-#include "ui/input.h"
 #include "ui/screens/continue_project_screen.h"
 #include "ui/screens/export_screen.h"
 #include "ui/screens/job_context.h"
@@ -52,30 +50,6 @@ static uint32_t monotonic_ms(void)
     return (uint32_t)(ts.tv_sec * 1000u + ts.tv_nsec / 1000000u);
 }
 
-/**
- * Bridge the legacy button-only InputEvent to the new UiEvent. Left maps
- * to BACK rather than NAV_LEFT -- see ui/preview.h controls doc. This is
- * the single translation point ui/core/ui_event.h's header comment refers
- * to. The evdev touch driver (ui/core/touch_input.c) does NOT go through
- * this bridge -- it produces UiEvent{UI_EVENT_TAP, x, y} directly, exactly
- * as that same header comment anticipated.
- */
-static UiEvent translate_input(InputEvent ev)
-{
-    UiEvent out = { .type = UI_EVENT_NONE };
-
-    switch (ev) {
-    case INPUT_BTN_UP:     out.type = UI_EVENT_NAV_UP;    break;
-    case INPUT_BTN_DOWN:   out.type = UI_EVENT_NAV_DOWN;  break;
-    case INPUT_BTN_LEFT:   out.type = UI_EVENT_BACK;      break;
-    case INPUT_BTN_RIGHT:  out.type = UI_EVENT_NAV_RIGHT; break;
-    case INPUT_BTN_CENTER: out.type = UI_EVENT_ACTIVATE;  break;
-    case INPUT_NONE:
-    default:               out.type = UI_EVENT_NONE;      break;
-    }
-    return out;
-}
-
 gm_status_t ui_preview_run(const char *pole_top_host)
 {
     gm_status_t ds = display_open();
@@ -84,29 +58,29 @@ gm_status_t ui_preview_run(const char *pole_top_host)
         return GM_ERR_IO;
     }
 
-    gm_status_t bs = gpio_button_open();
-    if (bs != GM_OK) {
-        log_error("ui_preview: gpio_button_open failed");
+    /* Touch is the only input source for this UI now that the physical
+     * GPIO d-pad is no longer read here (see ui/preview.h's controls
+     * doc) -- unlike the prior button+touch design, there is no
+     * graceful "button-only" fallback if no capacitive touch device is
+     * found, so this fails fast with a clear error rather than silently
+     * starting a UI with no way to interact with it at all. The legacy
+     * ui/client.c flow is unaffected -- it still owns its own
+     * gpio_button_open()/poll()/close() lifecycle for its button-only
+     * survey screen. */
+    gm_status_t ts = touch_input_open();
+    if (ts != GM_OK) {
+        log_error("ui_preview: no touch device found -- this UI is touch-only, "
+                  "cannot run without one");
         display_close();
         return GM_ERR_IO;
     }
-
-    /* Touch is optional -- preview still runs button-only if no
-     * capacitive touch device is found (e.g. testing on a panel that
-     * isn't connected yet, or before the evdev node is enumerated). */
-    gm_status_t ts = touch_input_open();
-    bool touch_available = (ts == GM_OK);
-    if (!touch_available)
-        log_warn("ui_preview: no touch device found -- running button-only");
 
     /* --- RTK feed (Measure Points' live fix) ----------------------------- */
     RtkFeedClient feed_client;
     gm_status_t fs = rtk_feed_client_start(&feed_client, pole_top_host);
     if (fs != GM_OK) {
         log_error("ui_preview: rtk_feed_client_start failed");
-        if (touch_available)
-            touch_input_close();
-        gpio_button_close();
+        touch_input_close();
         display_close();
         return GM_ERR_IO;
     }
@@ -129,7 +103,7 @@ gm_status_t ui_preview_run(const char *pole_top_host)
     job_context_init(&job_ctx);
 
     PlaceholderScreenCtx stats_stub;
-    placeholder_screen_init(&stats_stub, "Stats -- not built yet");
+    placeholder_screen_init(&stats_stub, &stack, "Stats -- not built yet");
 
     ExportScreenCtx export_ctx;
     export_screen_init(&export_ctx, &stack, &job_ctx);
@@ -175,22 +149,13 @@ gm_status_t ui_preview_run(const char *pole_top_host)
 
     ui_stack_push(&stack, sleep_screen_as_ui_screen(&sleep_ctx));
 
-    log_info("ui_preview: running (Up/Down move, Center activate, Left back, "
-             "tap%s supported, Ctrl+C exit)",
-             touch_available ? "" : " NOT");
+    log_info("ui_preview: running (touch-only -- tap to navigate, tap the "
+             "on-screen < Back button to go back, Ctrl+C exit)");
 
     while (g_running) {
-        InputEvent legacy_ev = gpio_button_poll();
-        UiEvent    btn_ev    = translate_input(legacy_ev);
-
-        if (btn_ev.type != UI_EVENT_NONE)
-            ui_stack_dispatch_event(&stack, btn_ev);
-
-        if (touch_available) {
-            UiEvent tap_ev;
-            if (touch_input_poll(&tap_ev))
-                ui_stack_dispatch_event(&stack, tap_ev);
-        }
+        UiEvent tap_ev;
+        if (touch_input_poll(&tap_ev))
+            ui_stack_dispatch_event(&stack, tap_ev);
 
         ui_stack_tick(&stack, monotonic_ms());
         ui_stack_render(&stack);
@@ -201,9 +166,7 @@ gm_status_t ui_preview_run(const char *pole_top_host)
 
     log_info("ui_preview: shutting down");
     rtk_feed_client_stop(&feed_client);
-    if (touch_available)
-        touch_input_close();
-    gpio_button_close();
+    touch_input_close();
     display_close();
     return GM_OK;
 }

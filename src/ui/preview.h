@@ -17,18 +17,24 @@
  * Manual/SSH invocation (e.g. for testing) uses the same flag:
  *   geomark --mode ui --ui-preview [--host <ip>]
  *
- * Controls (GPIO d-pad and capacitive touch both active):
- *   Up/Down  — move focus
- *   Center   — activate the focused widget
- *   Left     — back (matches the existing project-wide "Left = back"
- *              convention; no current screen needs Left for horizontal
- *              navigation yet — see preview.c's translate_input())
- *   Right    — reserved, currently a no-op
+ * Controls (touch-only -- the physical GPIO d-pad is no longer read by
+ * this UI; see this header's own git history for the prior button-based
+ * design if ever needed again):
  *   Tap      — hit-tests against the focused screen's widgets, relocates
  *              focus to the tapped widget, then activates it (see
- *              ui/core/widget.c's ui_grid_handle_event()). Falls back to
- *              button-only if no capacitive touch device is found.
+ *              ui/core/widget.c's ui_grid_handle_event()).
+ *   < Back   — every screen has a fixed top-left "< Back" button (see
+ *              ui/core/widget.h's ui_grid_add_back_button() doc comment)
+ *              that dispatches the same UI_EVENT_BACK the old physical
+ *              Left button used to -- including Measure Points' "close
+ *              an open overlay first" behavior, unchanged.
  *   Ctrl+C   — exit
+ *
+ * The legacy ui/client.c flow is unaffected by this -- it still reads
+ * the physical GPIO d-pad via ui/gpio_button.h for its own button-only
+ * survey screen, since that file is untouched per the project's
+ * production-flow rule. Only this screen-stack UI's input loop dropped
+ * GPIO polling.
  *
  * RTK feed: pole_top_host is the rover's IP/hostname (same --host flag and
  * default main.c already uses for ui_client_run()), passed straight

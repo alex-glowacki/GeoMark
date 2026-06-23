@@ -395,6 +395,50 @@ static void test_scroll_grid_capacity_61_widgets(void)
 }
 
 /* =========================================================================
+ * Back button (ui_grid_add_back_button) -- touch-only replacement for the
+ * physical Left/BACK button, added to every screen's grid (see
+ * ui/core/widget.h's doc comment for the full rationale). This module has
+ * no UiScreenStack* of its own, so it only verifies the widget itself --
+ * fixed rect, focusable, fires the caller-supplied on_activate exactly
+ * like ui_grid_add_button() -- not the BACK-dispatch behavior each
+ * screen's own on_back() callback wires up (covered in
+ * tests/test_screens.c instead, where a real UiScreenStack exists).
+ * ========================================================================= */
+
+static void test_back_button_rect_and_activate(void)
+{
+    ActivateProbe probe = {0};
+    UiWidgetGrid   grid;
+    ui_grid_init(&grid, &probe);
+
+    UiWidget *back = ui_grid_add_back_button(&grid, probe_activate);
+    ASSERT(back != NULL, "Back button allocated");
+    ASSERT(back->kind == WIDGET_BUTTON, "Back button is a WIDGET_BUTTON");
+    ASSERT(back->focusable, "Back button is focusable");
+    ASSERT(back->label && strcmp(back->label, "< Back") == 0,
+          "Back button has the standard label");
+
+    ASSERT(back->rect.x == UI_BACK_BUTTON_X && back->rect.y == UI_BACK_BUTTON_Y &&
+          back->rect.w == UI_BACK_BUTTON_W && back->rect.h == UI_BACK_BUTTON_H,
+          "Back button sits at the fixed top-left rect every screen shares");
+
+    ui_grid_focus_first(&grid);
+    ASSERT(&grid.widgets[grid.focus_idx] == back, "focus_first lands on the back button");
+
+    UiEvent activate = { .type = UI_EVENT_ACTIVATE };
+    ASSERT(ui_grid_handle_event(&grid, activate), "ACTIVATE on the focused back button is handled");
+    ASSERT(probe.activate_count == 1 && probe.last_widget == back,
+          "Back button fires the caller-supplied on_activate, same path as any other button");
+
+    /* Tap, not just Center/ACTIVATE, must also reach it -- this is the
+     * only input path once the physical d-pad is gone. */
+    UiEvent tap = { .type = UI_EVENT_TAP,
+                    .x = UI_BACK_BUTTON_X + 1, .y = UI_BACK_BUTTON_Y + 1 };
+    ASSERT(ui_grid_handle_event(&grid, tap), "Tap on the back button's rect is handled");
+    ASSERT(probe.activate_count == 2, "Tap fires on_activate a second time");
+}
+
+/* =========================================================================
  * main
  * ========================================================================= */
 int main(void)
@@ -408,6 +452,7 @@ int main(void)
     test_scroll_auto_scroll_up();
     test_scroll_hit_test_before_and_after();
     test_scroll_grid_capacity_61_widgets();
+    test_back_button_rect_and_activate();
 
     if (g_tests_failed == 0) {
         printf("All %d widget/screen-stack tests passed.\n", g_tests_run);

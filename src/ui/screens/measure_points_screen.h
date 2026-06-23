@@ -83,14 +83,18 @@
  * until changed) -- a field crew's rod height rarely changes during a
  * session.
  *
- * Navigation note: the physical d-pad's Right button is documented
- * (project memory) as currently-unreliable hardware, and Left is
- * permanently mapped to UI_EVENT_BACK (ui/preview.c's translate_input()).
- * That leaves Up/Down/Center as the only input this screen can rely on
- * for keyboard-less navigation -- the keyboard's own Left/Right-within-
- * a-row limitation (see ui/core/keyboard.h's file-level doc comment) is
- * a pre-existing, documented scope limit this screen inherits, not a
- * new one. The map panel itself is a live display, not a focus target.
+ * Navigation note: this screen is touch-only -- the physical GPIO d-pad
+ * is no longer read by ui/preview.c's input loop (see ui/preview.h's
+ * controls doc; the prior Right-button-unreliable/Left-mapped-to-BACK
+ * d-pad design is gone, not just worked around). The standard top-left
+ * "< Back" button (ui/core/widget.h's ui_grid_add_back_button()) is the
+ * only way back, dispatching the same UI_EVENT_BACK that closes an open
+ * keyboard/code-picker overlay first -- see measure_points_on_event()'s
+ * own BACK handling, which the back button reuses rather than
+ * duplicating. The keyboard's own no-Left/Right-within-a-row limitation
+ * (see ui/core/keyboard.h's file-level doc comment) is unaffected by
+ * this -- tap is still the only way to move within a key row, same as
+ * before. The map panel itself is a live display, not a focus target.
  *
  * RTK feed: this screen depends on RtkFeedFn, not on net/stream_client.h
  * directly -- see this header's RtkFeed doc comment below for why.

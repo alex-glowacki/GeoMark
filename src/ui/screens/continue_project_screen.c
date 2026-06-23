@@ -112,6 +112,14 @@ static void on_project_selected(UiWidget *self, void *screen_ctx)
     ui_stack_push(ctx->stack, ctx->job_setup_screen);
 }
 
+/** See ui/core/widget.h's ui_grid_add_back_button() doc comment. */
+static void on_back(UiWidget *self, void *screen_ctx)
+{
+    ContinueProjectScreenCtx *ctx = (ContinueProjectScreenCtx *)screen_ctx;
+    (void)self;
+    ui_stack_dispatch_event(ctx->stack, (UiEvent){ .type = UI_EVENT_BACK });
+}
+
 /* -------------------------------------------------------------------------
  * Lifecycle
  * ---------------------------------------------------------------------- */
@@ -153,6 +161,13 @@ static void rebuild_project_list(ContinueProjectScreenCtx *ctx)
         ui_widget_mark_scrollable(w);
         y = (uint16_t)(y + LIST_ROW_H + LIST_ROW_GAP);
     }
+
+    /* Added last, after the project list, so ui_grid_focus_first() in
+     * continue_project_on_enter() below still lands on the first project
+     * button when the list is non-empty -- same focus-order reasoning as
+     * open_job_screen.c's rebuild_job_list(). If the list is empty, this
+     * is the only focusable widget, so focus correctly lands here instead. */
+    ui_grid_add_back_button(&ctx->grid, on_back);
 }
 
 static void continue_project_on_enter(void *raw_ctx)

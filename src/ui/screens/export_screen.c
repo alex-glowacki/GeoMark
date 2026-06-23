@@ -137,6 +137,14 @@ static void on_export_csv(UiWidget *self, void *screen_ctx)
                  ctx->points.count);
 }
 
+/** See ui/core/widget.h's ui_grid_add_back_button() doc comment. */
+static void on_back(UiWidget *self, void *screen_ctx)
+{
+    ExportScreenCtx *ctx = (ExportScreenCtx *)screen_ctx;
+    (void)self;
+    ui_stack_dispatch_event(ctx->stack, (UiEvent){ .type = UI_EVENT_BACK });
+}
+
 /* -------------------------------------------------------------------------
  * Lifecycle
  * ---------------------------------------------------------------------- */
@@ -158,6 +166,7 @@ void export_screen_init(ExportScreenCtx *ctx, UiScreenStack *stack, const JobCon
 
     ui_grid_add_button(&ctx->grid, r1, "Export LandXML", on_export_landxml);
     ui_grid_add_button(&ctx->grid, r2, "Export CSV", on_export_csv);
+    ui_grid_add_back_button(&ctx->grid, on_back);
 }
 
 static void export_on_enter(void *raw_ctx)

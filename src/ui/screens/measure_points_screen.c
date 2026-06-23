@@ -361,6 +361,22 @@ static void on_export_activate(UiWidget *self, void *screen_ctx)
     ui_stack_push(ctx->stack, ctx->export_screen);
 }
 
+/**
+ * See ui/core/widget.h's ui_grid_add_back_button() doc comment.
+ * Dispatching UI_EVENT_BACK here (rather than popping directly) means a
+ * tap on this button gets exactly the same handling as a real BACK event
+ * from any other input source -- in particular, measure_points_on_event()
+ * below closes an open keyboard/code-picker overlay first and only pops
+ * the stack on a second BACK once no overlay is open. No special-casing
+ * needed here for overlay state.
+ */
+static void on_back(UiWidget *self, void *screen_ctx)
+{
+    MeasurePointsScreenCtx *ctx = (MeasurePointsScreenCtx *)screen_ctx;
+    (void)self;
+    ui_stack_dispatch_event(ctx->stack, (UiEvent){ .type = UI_EVENT_BACK });
+}
+
 /* -------------------------------------------------------------------------
  * Grid rebuild -- single source of truth for the currently focusable
  * widget set, driven entirely by ctx->overlay. Called from init,
@@ -411,17 +427,24 @@ static void rebuild_grid(MeasurePointsScreenCtx *ctx)
     switch (ctx->overlay) {
     case MEASURE_POINTS_OVERLAY_KEYBOARD:
         add_base_widgets(ctx);
+        /* Added after add_base_widgets() so ui_grid_focus_first() still
+         * lands on Point name (the first focusable widget), not here --
+         * same focus-order reasoning as new_project_screen.c's own
+         * back-button placement comment. */
+        ui_grid_add_back_button(&ctx->grid, on_back);
         keyboard_add_to_grid(&ctx->grid, &ctx->kb_labels);
         break;
 
     case MEASURE_POINTS_OVERLAY_CODE_PICKER:
         add_base_widgets(ctx);
+        ui_grid_add_back_button(&ctx->grid, on_back);
         add_code_picker_buttons(ctx);
         break;
 
     case MEASURE_POINTS_OVERLAY_NONE:
     default: {
         add_base_widgets(ctx);
+        ui_grid_add_back_button(&ctx->grid, on_back);
         UiRect capture_r = { STATUS_PANEL_X + MP_FIELD_MARGIN, MP_CAPTURE_Y,
                              MP_NAME_W, MP_CAPTURE_H };
         ui_grid_add_button(&ctx->grid, capture_r, "Capture Point", on_capture_point);

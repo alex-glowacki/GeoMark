@@ -41,6 +41,20 @@ static void on_stats(UiWidget *self, void *screen_ctx)
     ui_stack_push(ctx->stack, ctx->stats_screen);
 }
 
+/**
+ * Touch-only replacement for the physical Left/BACK button (see
+ * ui/core/widget.h's ui_grid_add_back_button() doc comment) -- dispatches
+ * a UI_EVENT_BACK through the stack rather than popping directly, so this
+ * screen's own on_event() BACK handling below runs exactly as it would
+ * for a real BACK event from any other input source.
+ */
+static void on_back(UiWidget *self, void *screen_ctx)
+{
+    MainMenuScreenCtx *ctx = (MainMenuScreenCtx *)screen_ctx;
+    (void)self;
+    ui_stack_dispatch_event(ctx->stack, (UiEvent){ .type = UI_EVENT_BACK });
+}
+
 void main_menu_screen_init(MainMenuScreenCtx *ctx, UiScreenStack *stack,
                            UiScreen new_project_screen,
                            UiScreen continue_project_screen,
@@ -61,6 +75,7 @@ void main_menu_screen_init(MainMenuScreenCtx *ctx, UiScreenStack *stack,
     ui_grid_add_button(&ctx->grid, r1, "Start New Project",         on_new_project);
     ui_grid_add_button(&ctx->grid, r2, "Continue Existing Project", on_continue_project);
     ui_grid_add_button(&ctx->grid, r3, "View GeoMark Stats",        on_stats);
+    ui_grid_add_back_button(&ctx->grid, on_back);
 }
 
 static void main_menu_on_enter(void *raw_ctx)

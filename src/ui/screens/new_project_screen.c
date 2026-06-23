@@ -141,6 +141,14 @@ static void on_keyboard_done(void *screen_ctx)
     }
 }
 
+/** See ui/core/widget.h's ui_grid_add_back_button() doc comment. */
+static void on_back(UiWidget *self, void *screen_ctx)
+{
+    NewProjectScreenCtx *ctx = (NewProjectScreenCtx *)screen_ctx;
+    (void)self;
+    ui_stack_dispatch_event(ctx->stack, (UiEvent){ .type = UI_EVENT_BACK });
+}
+
 /* -------------------------------------------------------------------------
  * Lifecycle
  * ---------------------------------------------------------------------- */
@@ -177,6 +185,13 @@ void new_project_screen_init(NewProjectScreenCtx *ctx, UiScreenStack *stack,
     ui_grid_add_button(&ctx->grid, create_r, "Create Project", on_create);
 
     keyboard_add_to_grid(&ctx->grid, &ctx->kb_labels);
+
+    /* Added last, after the keyboard, so it doesn't shift which widget
+     * ui_grid_focus_first() lands on in new_project_on_enter() below --
+     * the name field must stay first-focused (see that function's own
+     * doc comment), and ui_grid_focus_first() always returns the first
+     * focusable widget in insertion order. */
+    ui_grid_add_back_button(&ctx->grid, on_back);
 }
 
 static void new_project_on_enter(void *raw_ctx)

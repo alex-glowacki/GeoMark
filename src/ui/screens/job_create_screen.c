@@ -310,6 +310,14 @@ static void on_keyboard_done(void *screen_ctx)
     (void)screen_ctx;
 }
 
+/** See ui/core/widget.h's ui_grid_add_back_button() doc comment. */
+static void on_back(UiWidget *self, void *screen_ctx)
+{
+    JobCreateScreenCtx *ctx = (JobCreateScreenCtx *)screen_ctx;
+    (void)self;
+    ui_stack_dispatch_event(ctx->stack, (UiEvent){ .type = UI_EVENT_BACK });
+}
+
 /* -------------------------------------------------------------------------
  * Lifecycle
  * ---------------------------------------------------------------------- */
@@ -461,6 +469,12 @@ void job_create_screen_init(JobCreateScreenCtx *ctx, UiScreenStack *stack,
     set_active_field(ctx, JOB_CREATE_FIELD_JOB_NAME);
 
     keyboard_add_to_grid(&ctx->grid, &ctx->kb_labels);
+
+    /* Added last, after the keyboard, so it doesn't shift which widget
+     * ui_grid_focus_first() lands on in job_create_on_enter() below --
+     * the job name field must stay first-focused, same reasoning
+     * new_project_screen.c's own back-button placement comment gives. */
+    ui_grid_add_back_button(&ctx->grid, on_back);
 }
 
 static void job_create_on_enter(void *raw_ctx)

@@ -34,6 +34,14 @@ static void on_open_job(UiWidget *self, void *screen_ctx)
     ui_stack_push(ctx->stack, ctx->open_job_screen);
 }
 
+/** See ui/core/widget.h's ui_grid_add_back_button() doc comment. */
+static void on_back(UiWidget *self, void *screen_ctx)
+{
+    JobSetupScreenCtx *ctx = (JobSetupScreenCtx *)screen_ctx;
+    (void)self;
+    ui_stack_dispatch_event(ctx->stack, (UiEvent){ .type = UI_EVENT_BACK });
+}
+
 void job_setup_screen_init(JobSetupScreenCtx *ctx, UiScreenStack *stack,
                            UiScreen create_job_screen, UiScreen open_job_screen)
 {
@@ -49,6 +57,7 @@ void job_setup_screen_init(JobSetupScreenCtx *ctx, UiScreenStack *stack,
 
     ui_grid_add_button(&ctx->grid, r1, "Create New Job",   on_create_job);
     ui_grid_add_button(&ctx->grid, r2, "Open Existing Job", on_open_job);
+    ui_grid_add_back_button(&ctx->grid, on_back);
 }
 
 static void job_setup_on_enter(void *raw_ctx)

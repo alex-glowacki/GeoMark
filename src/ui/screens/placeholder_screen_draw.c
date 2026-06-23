@@ -27,8 +27,9 @@ void placeholder_screen_render(void *raw_ctx)
     uint16_t mx      = (uint16_t)((TFT_WIDTH > msg_w) ? (TFT_WIDTH - msg_w) / 2 : 4);
     display_draw_string(mx, (uint16_t)(TFT_HEIGHT / 2 + 10), msg, TFT_GRAY, TFT_BLACK, 1);
 
-    const char *hint = "Press Left to go back";
-    uint16_t hint_w   = (uint16_t)(strlen(hint) * (TFT_FONT_W + 1));
-    uint16_t hx       = (uint16_t)((TFT_WIDTH > hint_w) ? (TFT_WIDTH - hint_w) / 2 : 4);
-    display_draw_string(hx, (uint16_t)(TFT_HEIGHT - 30), hint, TFT_DKGRAY, TFT_BLACK, 1);
+    /* Tap the back button (top-left, every screen) to leave -- replaces
+     * the old "Press Left to go back" hint now that the physical Left
+     * button is gone (touch-only input, see ui/core/widget.h's
+     * ui_grid_add_back_button() doc comment). */
+    ui_grid_render(&ctx->grid);
 }

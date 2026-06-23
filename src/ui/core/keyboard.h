@@ -32,15 +32,14 @@
  *     "active edit target" (see UiKeyboardTarget below). The keyboard
  *     module has no opinion on which field that is — only the owning
  *     screen does, since a screen may have more than one text field.
- *   - D-pad reach: Up/Down/Center move focus *vertically* via the grid's
- *     existing geometric ui_grid_move_focus() — that part works today.
- *     Left/Right *within* a key row do not: Left is permanently bound to
- *     UI_EVENT_BACK at the ui/preview.c translation point (see
- *     ui/core/ui_event.h), and Right is currently unreliable hardware
- *     (Field Hardening Gameplan item 10). Touch is therefore the only
- *     fully reliable way to reach an individual key today. This is a
- *     deliberate, documented scope limit, not an oversight — revisit
- *     once Right's wiring is fixed.
+ *   - D-pad reach: this screen-stack UI is touch-only now (the physical
+ *     GPIO d-pad is no longer read by ui/preview.c's input loop -- see
+ *     ui/preview.h's controls doc), so Up/Down/Center/Left/Right d-pad
+ *     navigation is moot here regardless of key-row layout. Tap is the
+ *     only way to reach an individual key. This module's vertical
+ *     ui_grid_move_focus() reach still works (input-source-agnostic, see
+ *     ui/core/widget.c), but nothing in ui/preview.c feeds it d-pad
+ *     events to exercise that path in practice.
  *   - Character set is closed by construction: letters (rendered
  *     uppercase to match the legacy survey_screen.c keyboard's
  *     convention), digits, '-', '_', and space. No other character can

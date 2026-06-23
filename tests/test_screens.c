@@ -126,22 +126,67 @@ static void test_sleep_to_menu_to_stub_and_back(void)
 }
 
 /* =========================================================================
- * Placeholder screen: never consumes anything, including BACK
+ * Main Menu's standard back button (touch-only replacement for the
+ * physical Left/BACK button) -- tapping it dispatches the same BACK
+ * event test_sleep_to_menu_to_stub_and_back() above already drives via
+ * UI_EVENT_BACK directly, confirming the button is wired correctly
+ * rather than merely present.
  * ========================================================================= */
 
-static void test_placeholder_always_unconsumed(void)
+static void test_main_menu_back_button_tap_returns_to_sleep(void)
 {
-    PlaceholderScreenCtx ctx;
-    placeholder_screen_init(&ctx, "Test message");
+    UiScreenStack stack;
+    ui_stack_init(&stack);
 
-    UiScreen s = placeholder_screen_as_ui_screen(&ctx);
+    StubScreenCtx new_project_ctx = {0};
+    StubScreenCtx continue_ctx    = {0};
+    StubScreenCtx stats_ctx       = {0};
 
-    UiEvent activate = { .type = UI_EVENT_ACTIVATE };
-    ASSERT(!s.on_event(s.ctx, activate), "Placeholder never consumes ACTIVATE");
+    MainMenuScreenCtx menu_ctx;
+    main_menu_screen_init(&menu_ctx, &stack,
+                          make_stub(&new_project_ctx),
+                          make_stub(&continue_ctx),
+                          make_stub(&stats_ctx));
 
-    UiEvent back = { .type = UI_EVENT_BACK };
-    ASSERT(!s.on_event(s.ctx, back), "Placeholder lets BACK fall through to the stack");
+    SleepScreenCtx sleep_ctx;
+    sleep_screen_init(&sleep_ctx, &stack, main_menu_screen_as_ui_screen(&menu_ctx));
+
+    ui_stack_push(&stack, sleep_screen_as_ui_screen(&sleep_ctx));
+
+    UiEvent nav_down = { .type = UI_EVENT_NAV_DOWN };
+    ui_stack_dispatch_event(&stack, nav_down); /* wake into Main Menu */
+    ASSERT(ui_stack_top(&stack)->ctx == &menu_ctx, "Main Menu is on top after waking");
+
+    UiWidget *back_btn = NULL;
+    for (uint32_t i = 0; i < menu_ctx.grid.count; i++) {
+        if (menu_ctx.grid.widgets[i].kind == WIDGET_BUTTON &&
+            menu_ctx.grid.widgets[i].label &&
+            strcmp(menu_ctx.grid.widgets[i].label, "< Back") == 0) {
+            back_btn = &menu_ctx.grid.widgets[i];
+            break;
+        }
+    }
+    ASSERT(back_btn != NULL, "Main Menu has the standard back button");
+    if (back_btn) {
+        UiEvent tap = { .type = UI_EVENT_TAP, .x = back_btn->rect.x + 1,
+                        .y = back_btn->rect.y + 1 };
+        ui_stack_dispatch_event(&stack, tap);
+    }
+
+    ASSERT(stack.depth == 1, "Tapping the back button returns to Sleep");
+    ASSERT(ui_stack_top(&stack)->ctx == &sleep_ctx, "Sleep is on top after the tap");
 }
+
+/* =========================================================================
+ * Placeholder screen: has exactly one widget (the standard back button),
+ * which dispatches BACK through the stack -- BACK still falls through to
+ * the stack's default pop policy when no overlay/widget consumes it
+ * first, same as every other screen now that the physical Left/BACK
+ * button is gone (touch-only input). See further down this file (after
+ * find_widget()/activate_widget_directly() are defined) for the actual
+ * test functions -- test_placeholder_back_button_pops_stack() and
+ * test_placeholder_back_button_tap_dispatches_back().
+ * ========================================================================= */
 
 /* =========================================================================
  * New Project: the real screen, reachable from Main Menu, end to end --
@@ -172,9 +217,9 @@ static void test_new_project_end_to_end(void)
     PlaceholderScreenCtx job_setup_stub;
     PlaceholderScreenCtx continue_stub;
     PlaceholderScreenCtx stats_stub;
-    placeholder_screen_init(&job_setup_stub, "Job Setup -- not built yet");
-    placeholder_screen_init(&continue_stub,  "Continue Project -- not built yet");
-    placeholder_screen_init(&stats_stub,     "Stats -- not built yet");
+    placeholder_screen_init(&job_setup_stub, &stack, "Job Setup -- not built yet");
+    placeholder_screen_init(&continue_stub, &stack, "Continue Project -- not built yet");
+    placeholder_screen_init(&stats_stub, &stack, "Stats -- not built yet");
 
     NewProjectScreenCtx new_project_ctx;
     new_project_screen_init(&new_project_ctx, &stack,
@@ -309,21 +354,51 @@ static void activate_widget_directly(UiWidgetGrid *grid, UiWidget *w)
 }
 
 /* =========================================================================
- * End-to-end: Sleep -> Main Menu -> New Project -> Job Setup ->
- * Create New Job, all the way through to a verified job.ini on disk.
- *
- * Covers what Session 21's handoff documented but never actually
- * committed to this file (caught by comparing the commit's diff stat
- * against its own commit message -- tests/test_screens.c was not in
- * that diff despite the message claiming it was extended). Rewritten
- * here from the real job_setup_screen.h / job_create_screen.h /
- * job_metadata.h signatures, not from the prior description.
- *
- * HOME is redirected to a disposable mkdtemp() directory for the
- * duration of this test, same convention as test_new_project_end_to_end
- * above, restored afterward regardless of pass/fail.
+ * Placeholder screen back button (see this file's earlier doc comment,
+ * right after test_sleep_to_menu_to_stub_and_back()).
  * ========================================================================= */
 
+static void test_placeholder_back_button_pops_stack(void)
+{
+    UiScreenStack stack;
+    ui_stack_init(&stack);
+
+    StubScreenCtx parent_ctx = {0};
+    ui_stack_push(&stack, make_stub(&parent_ctx));
+
+    PlaceholderScreenCtx ctx;
+    placeholder_screen_init(&ctx, &stack, "Test message");
+    ui_stack_push(&stack, placeholder_screen_as_ui_screen(&ctx));
+
+    ASSERT(find_widget(&ctx.grid, WIDGET_BUTTON, "< Back") != NULL,
+          "The placeholder screen has the standard back button");
+
+    UiEvent back = { .type = UI_EVENT_BACK };
+    ui_stack_dispatch_event(&stack, back);
+    ASSERT(stack.depth == 1, "BACK falls through to the stack's default pop policy");
+    ASSERT(ui_stack_top(&stack)->ctx == &parent_ctx, "Popped back to the parent screen");
+}
+
+static void test_placeholder_back_button_tap_dispatches_back(void)
+{
+    UiScreenStack stack;
+    ui_stack_init(&stack);
+
+    StubScreenCtx parent_ctx = {0};
+    ui_stack_push(&stack, make_stub(&parent_ctx));
+
+    PlaceholderScreenCtx ctx;
+    placeholder_screen_init(&ctx, &stack, "Test message");
+    ui_stack_push(&stack, placeholder_screen_as_ui_screen(&ctx));
+
+    UiWidget *back_btn = find_widget(&ctx.grid, WIDGET_BUTTON, "< Back");
+    ASSERT(back_btn != NULL, "The back button exists");
+    if (back_btn)
+        activate_widget_directly(&ctx.grid, back_btn);
+
+    ASSERT(stack.depth == 1, "Tapping the back button pops back to the parent screen");
+    ASSERT(ui_stack_top(&stack)->ctx == &parent_ctx, "Parent screen is on top again");
+}
 static void test_job_setup_and_create_end_to_end(void)
 {
     char tmpl[] = "/tmp/geomark_test_home_XXXXXX";
@@ -347,9 +422,9 @@ static void test_job_setup_and_create_end_to_end(void)
     PlaceholderScreenCtx measure_points_stub;
     PlaceholderScreenCtx continue_stub;
     PlaceholderScreenCtx stats_stub;
-    placeholder_screen_init(&measure_points_stub, "Measure Points -- not built yet");
-    placeholder_screen_init(&continue_stub,       "Continue Project -- not built yet");
-    placeholder_screen_init(&stats_stub,          "Stats -- not built yet");
+    placeholder_screen_init(&measure_points_stub, &stack, "Measure Points -- not built yet");
+    placeholder_screen_init(&continue_stub, &stack, "Continue Project -- not built yet");
+    placeholder_screen_init(&stats_stub, &stack, "Stats -- not built yet");
 
     JobCreateScreenCtx job_create_ctx;
     job_create_screen_init(&job_create_ctx, &stack,
@@ -535,6 +610,7 @@ static void test_job_setup_and_create_end_to_end(void)
 
     char projects_dir[540];
     snprintf(projects_dir, sizeof(projects_dir), "%s/geomark-data/projects", tmp_home);
+    snprintf(projects_dir, sizeof(projects_dir), "%s/geomark-data/projects", tmp_home);
     rmdir(projects_dir);
 
     char data_dir[520];
@@ -586,9 +662,9 @@ static void test_open_job_end_to_end(void)
     PlaceholderScreenCtx measure_points_stub;
     PlaceholderScreenCtx continue_stub;
     PlaceholderScreenCtx stats_stub;
-    placeholder_screen_init(&measure_points_stub, "Measure Points -- not built yet");
-    placeholder_screen_init(&continue_stub,       "Continue Project -- not built yet");
-    placeholder_screen_init(&stats_stub,          "Stats -- not built yet");
+    placeholder_screen_init(&measure_points_stub, &stack, "Measure Points -- not built yet");
+    placeholder_screen_init(&continue_stub, &stack, "Continue Project -- not built yet");
+    placeholder_screen_init(&stats_stub, &stack, "Stats -- not built yet");
 
     JobCreateScreenCtx job_create_ctx;
     job_create_screen_init(&job_create_ctx, &stack,
@@ -787,7 +863,7 @@ static void test_open_job_status_cases(void)
     job_context_init(&job_ctx);
 
     PlaceholderScreenCtx measure_points_stub;
-    placeholder_screen_init(&measure_points_stub, "Measure Points -- not built yet");
+    placeholder_screen_init(&measure_points_stub, &stack, "Measure Points -- not built yet");
 
     /* Case 1: no project set at all. */
     ProjectContext empty_ctx;
@@ -884,8 +960,8 @@ static void test_continue_project_end_to_end(void)
 
         PlaceholderScreenCtx measure_points_stub;
         PlaceholderScreenCtx stats_stub;
-        placeholder_screen_init(&measure_points_stub, "Measure Points -- not built yet");
-        placeholder_screen_init(&stats_stub,          "Stats -- not built yet");
+        placeholder_screen_init(&measure_points_stub, &stack, "Measure Points -- not built yet");
+        placeholder_screen_init(&stats_stub, &stack, "Stats -- not built yet");
 
         JobCreateScreenCtx job_create_ctx;
         job_create_screen_init(&job_create_ctx, &stack,
@@ -998,8 +1074,8 @@ static void test_continue_project_end_to_end(void)
 
         PlaceholderScreenCtx measure_points_stub;
         PlaceholderScreenCtx stats_stub;
-        placeholder_screen_init(&measure_points_stub, "Measure Points -- not built yet");
-        placeholder_screen_init(&stats_stub,          "Stats -- not built yet");
+        placeholder_screen_init(&measure_points_stub, &stack, "Measure Points -- not built yet");
+        placeholder_screen_init(&stats_stub, &stack, "Stats -- not built yet");
 
         JobCreateScreenCtx job_create_ctx;
         job_create_screen_init(&job_create_ctx, &stack,
@@ -1054,8 +1130,7 @@ static void test_continue_project_end_to_end(void)
               "Continue Existing Project pushes the real screen, not a placeholder");
         ASSERT(continue_project_ctx.status == CONTINUE_PROJECT_STATUS_NONE,
               "A geomark-data tree with one project reports no error status");
-        ASSERT(continue_project_ctx.project_count == 1,
-              "The scan found exactly the one project created in the prior block");
+        ASSERT(continue_project_ctx.project_count == 1, "The scan found exactly the one project created in the prior block");
         ASSERT(strcmp(continue_project_ctx.project_names[0], project_name) == 0,
               "The discovered project's name matches what New Project created earlier");
 
@@ -1143,7 +1218,7 @@ static void test_continue_project_status_cases(void)
     ui_stack_init(&stack);
 
     PlaceholderScreenCtx job_setup_stub;
-    placeholder_screen_init(&job_setup_stub, "Job Setup -- not built yet");
+    placeholder_screen_init(&job_setup_stub, &stack, "Job Setup -- not built yet");
 
     ProjectContext project_ctx;
     project_context_init(&project_ctx);
@@ -1331,8 +1406,8 @@ static void test_measure_points_capture_and_persist_end_to_end(void)
 
     MainMenuScreenCtx menu_ctx;
     PlaceholderScreenCtx continue_stub, stats_stub;
-    placeholder_screen_init(&continue_stub, "Continue Project -- not built yet");
-    placeholder_screen_init(&stats_stub,    "Stats -- not built yet");
+    placeholder_screen_init(&continue_stub, &stack, "Continue Project -- not built yet");
+    placeholder_screen_init(&stats_stub, &stack, "Stats -- not built yet");
     main_menu_screen_init(&menu_ctx, &stack,
                           new_project_screen_as_ui_screen(&new_project_ctx),
                           placeholder_screen_as_ui_screen(&continue_stub),
@@ -1749,7 +1824,7 @@ static void test_measure_points_back_closes_overlay_first(void)
     job_context_init(&job_ctx);
 
     PlaceholderScreenCtx parent_stub;
-    placeholder_screen_init(&parent_stub, "parent -- not built yet");
+    placeholder_screen_init(&parent_stub, &stack, "parent -- not built yet");
     ui_stack_push(&stack, placeholder_screen_as_ui_screen(&parent_stub));
 
     MeasurePointsScreenCtx ctx;
@@ -1777,6 +1852,62 @@ static void test_measure_points_back_closes_overlay_first(void)
     ui_stack_dispatch_event(&stack, back);
     ASSERT(ui_stack_top(&stack)->ctx == &parent_stub,
           "A second BACK, with no overlay open, pops back to the parent screen");
+}
+
+/* -------------------------------------------------------------------------
+ * Same as test_measure_points_back_closes_overlay_first() above, but via
+ * a tap on the rendered back button rather than a direct UI_EVENT_BACK --
+ * confirms the button's on_back() callback (ui_stack_dispatch_event())
+ * gets the exact same overlay-aware handling, not a shortcut that skips
+ * it. The back button is re-added by rebuild_grid() in every overlay
+ * branch (see that function), so it must still be present and at the
+ * same rect with the keyboard open.
+ * ---------------------------------------------------------------------- */
+
+static void test_measure_points_back_button_tap_closes_overlay_first(void)
+{
+    UiScreenStack stack;
+    ui_stack_init(&stack);
+
+    JobContext job_ctx;
+    job_context_init(&job_ctx);
+
+    PlaceholderScreenCtx parent_stub;
+    placeholder_screen_init(&parent_stub, &stack, "parent -- not built yet");
+    ui_stack_push(&stack, placeholder_screen_as_ui_screen(&parent_stub));
+
+    MeasurePointsScreenCtx ctx;
+    ExportScreenCtx export_ctx;
+    export_screen_init(&export_ctx, &stack, &job_ctx);
+    measure_points_screen_init(&ctx, &stack, &job_ctx, measure_points_no_feed(),
+                               export_screen_as_ui_screen(&export_ctx));
+    ui_stack_push(&stack, measure_points_screen_as_ui_screen(&ctx));
+
+    UiWidget *toggle = find_widget(&ctx.grid, WIDGET_BUTTON, "Keyboard");
+    ASSERT(toggle != NULL, "The keyboard-toggle button exists");
+    if (toggle)
+        activate_widget_directly(&ctx.grid, toggle);
+    ASSERT(ctx.overlay == MEASURE_POINTS_OVERLAY_KEYBOARD, "The keyboard is now showing");
+
+    UiWidget *back_btn = find_widget(&ctx.grid, WIDGET_BUTTON, "< Back");
+    ASSERT(back_btn != NULL, "The back button is still present while the keyboard overlay is open");
+    if (back_btn)
+        activate_widget_directly(&ctx.grid, back_btn);
+
+    ASSERT(ctx.overlay == MEASURE_POINTS_OVERLAY_NONE,
+          "Tapping the back button with the keyboard open closes the keyboard, "
+          "not the screen");
+    ASSERT(ui_stack_top(&stack)->ctx == &ctx,
+          "Measure Points is still the top of the stack after that tap");
+
+    /* A second tap, now that no overlay is open, pops the stack. */
+    back_btn = find_widget(&ctx.grid, WIDGET_BUTTON, "< Back");
+    ASSERT(back_btn != NULL, "The back button is still present with no overlay open");
+    if (back_btn)
+        activate_widget_directly(&ctx.grid, back_btn);
+
+    ASSERT(ui_stack_top(&stack)->ctx == &parent_stub,
+          "A second tap, with no overlay open, pops back to the parent screen");
 }
 
 /* -------------------------------------------------------------------------
@@ -1840,7 +1971,9 @@ static void test_measure_points_code_picker_fills_code_field(void)
 int main(void)
 {
     test_sleep_to_menu_to_stub_and_back();
-    test_placeholder_always_unconsumed();
+    test_main_menu_back_button_tap_returns_to_sleep();
+    test_placeholder_back_button_pops_stack();
+    test_placeholder_back_button_tap_dispatches_back();
     test_new_project_end_to_end();
     test_job_setup_and_create_end_to_end();
     test_open_job_end_to_end();
@@ -1853,6 +1986,7 @@ int main(void)
     test_measure_points_typed_fields_and_height_correction();
     test_measure_points_keyboard_toggle_button();
     test_measure_points_back_closes_overlay_first();
+    test_measure_points_back_button_tap_closes_overlay_first();
     test_measure_points_code_picker_fills_code_field();
 
     if (g_tests_failed == 0) {

@@ -10,11 +10,18 @@
  * is no parallel touch-only code path — see widget.c's
  * ui_grid_handle_event().
  *
- * Bridging from the legacy GPIO d-pad InputEvent happens at a single
- * translation point in ui/preview.c (translate_input()). The evdev touch
- * driver (ui/core/touch_input.c) produces UiEvent{UI_EVENT_TAP, x, y}
- * directly with no separate bridge -- both input sources feed into the
- * same ui_stack_dispatch_event() call per tick.
+ * ui/preview.c's screen-stack UI is touch-only: it no longer reads the
+ * physical GPIO d-pad at all, so the translate_input() bridge this
+ * comment used to describe is gone, and UI_EVENT_NAV_UP/DOWN/LEFT/RIGHT
+ * and UI_EVENT_ACTIVATE are never produced there in practice. They
+ * remain part of this enum because the legacy ui/client.c flow's own
+ * button-only survey screen still exists and is reachable without
+ * --ui-preview, and because ui/core/widget.c's grid logic (focus
+ * movement, ACTIVATE handling) is input-source-agnostic and still
+ * exercised directly by tests/test_widget.c. The evdev touch driver
+ * (ui/core/touch_input.c) produces UiEvent{UI_EVENT_TAP, x, y}
+ * directly -- the only event type ui/preview.c's input loop actually
+ * feeds into the stack now.
  */
 
 #ifndef GEOMARK_UI_CORE_EVENT_H
