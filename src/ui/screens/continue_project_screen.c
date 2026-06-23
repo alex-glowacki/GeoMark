@@ -35,6 +35,23 @@
 #define LIST_ROW_GAP    10
 #define LIST_BTN_W      (TFT_WIDTH - 2 * LIST_MARGIN)
 
+/* How many project rows fit in the visible list region without scrolling
+ * -- same derivation and rationale as open_job_screen.c's
+ * LIST_VISIBLE_ROWS (kept as its own #define for the same reason the
+ * layout block above is its own copy rather than shared). */
+#define LIST_VISIBLE_ROWS (((LIST_BOTTOM_Y - LIST_TOP_Y) + LIST_ROW_GAP) / (LIST_ROW_H + LIST_ROW_GAP))
+
+/* Up/Down nav buttons -- top-right corner, same placement and rationale
+ * as open_job_screen.c's own NAV_BUTTON_X/NAV_UP_Y/NAV_DOWN_Y (verified
+ * clear of this screen's title, "Continue Existing Project" -- the
+ * longest title in the codebase, ends at x=550, see widget.h's back
+ * button doc comment -- and of the back button at x=8..78). Only added
+ * when ctx->project_count exceeds LIST_VISIBLE_ROWS -- see
+ * rebuild_project_list(). */
+#define NAV_BUTTON_X      (TFT_WIDTH - 8 - UI_NAV_BUTTON_W)
+#define NAV_UP_Y          4
+#define NAV_DOWN_Y        (NAV_UP_Y + UI_NAV_BUTTON_H + 4)
+
 /* -------------------------------------------------------------------------
  * Directory scan
  *
@@ -120,6 +137,31 @@ static void on_back(UiWidget *self, void *screen_ctx)
     ui_stack_dispatch_event(ctx->stack, (UiEvent){ .type = UI_EVENT_BACK });
 }
 
+/** See ui/core/widget.h's ui_grid_add_nav_up_button()/_down_button() doc
+ * comment, and open_job_screen.c's own on_nav_up()/on_nav_down() for the
+ * identical rationale (only added when the list actually overflows, and
+ * restoring scroll_anchor_idx before moving focus for the same reason
+ * documented in continue_project_screen.h). */
+static void on_nav_up(UiWidget *self, void *screen_ctx)
+{
+    ContinueProjectScreenCtx *ctx = (ContinueProjectScreenCtx *)screen_ctx;
+    (void)self;
+    if (ctx->scroll_anchor_idx >= 0 && ctx->scroll_anchor_idx < (int32_t)ctx->grid.count)
+        ctx->grid.focus_idx = ctx->scroll_anchor_idx;
+    ui_grid_move_focus(&ctx->grid, UI_EVENT_NAV_UP);
+    ctx->scroll_anchor_idx = ctx->grid.focus_idx;
+}
+
+static void on_nav_down(UiWidget *self, void *screen_ctx)
+{
+    ContinueProjectScreenCtx *ctx = (ContinueProjectScreenCtx *)screen_ctx;
+    (void)self;
+    if (ctx->scroll_anchor_idx >= 0 && ctx->scroll_anchor_idx < (int32_t)ctx->grid.count)
+        ctx->grid.focus_idx = ctx->scroll_anchor_idx;
+    ui_grid_move_focus(&ctx->grid, UI_EVENT_NAV_DOWN);
+    ctx->scroll_anchor_idx = ctx->grid.focus_idx;
+}
+
 /* -------------------------------------------------------------------------
  * Lifecycle
  * ---------------------------------------------------------------------- */
@@ -168,6 +210,15 @@ static void rebuild_project_list(ContinueProjectScreenCtx *ctx)
      * open_job_screen.c's rebuild_job_list(). If the list is empty, this
      * is the only focusable widget, so focus correctly lands here instead. */
     ui_grid_add_back_button(&ctx->grid, on_back);
+
+    /* Only when the list actually overflows the visible region -- same
+     * rationale as open_job_screen.c's rebuild_job_list(). */
+    if (ctx->project_count > LIST_VISIBLE_ROWS) {
+        ui_grid_add_nav_up_button(&ctx->grid,
+            (UiRect){NAV_BUTTON_X, NAV_UP_Y, UI_NAV_BUTTON_W, UI_NAV_BUTTON_H}, on_nav_up);
+        ui_grid_add_nav_down_button(&ctx->grid,
+            (UiRect){NAV_BUTTON_X, NAV_DOWN_Y, UI_NAV_BUTTON_W, UI_NAV_BUTTON_H}, on_nav_down);
+    }
 }
 
 static void continue_project_on_enter(void *raw_ctx)
@@ -183,6 +234,11 @@ static bool continue_project_on_event(void *raw_ctx, UiEvent ev)
 
     if (ev.type == UI_EVENT_BACK)
         return false; /* unconsumed -- stack pops back to Main Menu */
+
+    /* Capture focus_idx before this event reaches the grid -- see
+     * scroll_anchor_idx's doc comment in continue_project_screen.h and
+     * open_job_screen.c's identical on_event for the full rationale. */
+    ctx->scroll_anchor_idx = ctx->grid.focus_idx;
 
     return ui_grid_handle_event(&ctx->grid, ev);
 }

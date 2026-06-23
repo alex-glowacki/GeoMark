@@ -41,6 +41,16 @@
                               * see job_create_screen_draw.c */
 #define SCROLL_HEIGHT   (KEYBOARD_TOP_Y - SCROLL_TOP_Y)
 
+/* Up/Down nav buttons -- top-right corner, mirroring the back button's
+ * top-left footprint (UI_NAV_BUTTON_W/H == UI_BACK_BUTTON_W/H). Verified
+ * clear of this screen's title ("Create New Job", centered, nowhere near
+ * x=722) and of the back button (x=8..78) -- see ui/core/widget.h's nav
+ * button doc comment for why placement is caller-chosen rather than a
+ * fixed constant in widget.h itself. */
+#define NAV_BUTTON_X      (800 - 8 - UI_NAV_BUTTON_W)
+#define NAV_UP_Y          4
+#define NAV_DOWN_Y        (NAV_UP_Y + UI_NAV_BUTTON_H + 4)
+
 /* -------------------------------------------------------------------------
  * Dropdown option tables
  * ---------------------------------------------------------------------- */
@@ -318,6 +328,35 @@ static void on_back(UiWidget *self, void *screen_ctx)
     ui_stack_dispatch_event(ctx->stack, (UiEvent){ .type = UI_EVENT_BACK });
 }
 
+/** See ui/core/widget.h's ui_grid_add_nav_up_button()/_down_button() doc
+ * comment, and open_job_screen.c's own on_nav_up()/on_nav_down() for the
+ * identical rationale. This form's content (676px) is always taller
+ * than its scroll viewport (204px, see this file's top-of-file layout
+ * comment), so these are unconditional here, unlike Open Job/Continue
+ * Project's runtime overflow check -- but the focus-stealing problem
+ * scroll_anchor_idx fixes applies regardless of that distinction, since
+ * it's caused by UI_EVENT_TAP itself (see job_create_screen.h's doc
+ * comment for the field). */
+static void on_nav_up(UiWidget *self, void *screen_ctx)
+{
+    JobCreateScreenCtx *ctx = (JobCreateScreenCtx *)screen_ctx;
+    (void)self;
+    if (ctx->scroll_anchor_idx >= 0 && ctx->scroll_anchor_idx < (int32_t)ctx->grid.count)
+        ctx->grid.focus_idx = ctx->scroll_anchor_idx;
+    ui_grid_move_focus(&ctx->grid, UI_EVENT_NAV_UP);
+    ctx->scroll_anchor_idx = ctx->grid.focus_idx;
+}
+
+static void on_nav_down(UiWidget *self, void *screen_ctx)
+{
+    JobCreateScreenCtx *ctx = (JobCreateScreenCtx *)screen_ctx;
+    (void)self;
+    if (ctx->scroll_anchor_idx >= 0 && ctx->scroll_anchor_idx < (int32_t)ctx->grid.count)
+        ctx->grid.focus_idx = ctx->scroll_anchor_idx;
+    ui_grid_move_focus(&ctx->grid, UI_EVENT_NAV_DOWN);
+    ctx->scroll_anchor_idx = ctx->grid.focus_idx;
+}
+
 /* -------------------------------------------------------------------------
  * Lifecycle
  * ---------------------------------------------------------------------- */
@@ -475,6 +514,13 @@ void job_create_screen_init(JobCreateScreenCtx *ctx, UiScreenStack *stack,
      * the job name field must stay first-focused, same reasoning
      * new_project_screen.c's own back-button placement comment gives. */
     ui_grid_add_back_button(&ctx->grid, on_back);
+
+    /* Unconditional -- see on_nav_up()/on_nav_down()'s doc comment above
+     * for why this form always overflows its scroll region. */
+    ui_grid_add_nav_up_button(&ctx->grid,
+        (UiRect){NAV_BUTTON_X, NAV_UP_Y, UI_NAV_BUTTON_W, UI_NAV_BUTTON_H}, on_nav_up);
+    ui_grid_add_nav_down_button(&ctx->grid,
+        (UiRect){NAV_BUTTON_X, NAV_DOWN_Y, UI_NAV_BUTTON_W, UI_NAV_BUTTON_H}, on_nav_down);
 }
 
 static void job_create_on_enter(void *raw_ctx)
@@ -489,6 +535,11 @@ static bool job_create_on_event(void *raw_ctx, UiEvent ev)
 
     if (ev.type == UI_EVENT_BACK)
         return false; /* unconsumed -- stack pops back to Job Setup */
+
+    /* Capture focus_idx before this event reaches the grid -- see
+     * scroll_anchor_idx's doc comment in job_create_screen.h and
+     * open_job_screen.c's identical on_event for the full rationale. */
+    ctx->scroll_anchor_idx = ctx->grid.focus_idx;
 
     return ui_grid_handle_event(&ctx->grid, ev);
 }

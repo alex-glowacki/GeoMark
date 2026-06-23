@@ -34,6 +34,23 @@
 #define LIST_ROW_GAP    10
 #define LIST_BTN_W      (TFT_WIDTH - 2 * LIST_MARGIN)
 
+/* How many job rows fit in the visible list region without scrolling --
+ * used to decide whether the Up/Down nav buttons are needed at all (see
+ * rebuild_job_list() below). Integer division matches how many full
+ * LIST_ROW_H+LIST_ROW_GAP-tall rows fit in the region; the trailing
+ * +LIST_ROW_GAP accounts for the last visible row not needing a gap
+ * after it. */
+#define LIST_VISIBLE_ROWS (((LIST_BOTTOM_Y - LIST_TOP_Y) + LIST_ROW_GAP) / (LIST_ROW_H + LIST_ROW_GAP))
+
+/* Up/Down nav buttons -- top-right corner, mirroring the back button's
+ * top-left footprint and job_create_screen.c's own placement. Verified
+ * clear of this screen's title ("Open Existing Job", centered, nowhere
+ * near x=722) and of the back button (x=8..78). Only added when
+ * ctx->job_count exceeds LIST_VISIBLE_ROWS -- see rebuild_job_list(). */
+#define NAV_BUTTON_X      (TFT_WIDTH - 8 - UI_NAV_BUTTON_W)
+#define NAV_UP_Y          4
+#define NAV_DOWN_Y        (NAV_UP_Y + UI_NAV_BUTTON_H + 4)
+
 /* -------------------------------------------------------------------------
  * Directory scan
  *
@@ -145,6 +162,39 @@ static void on_back(UiWidget *self, void *screen_ctx)
     ui_stack_dispatch_event(ctx->stack, (UiEvent){ .type = UI_EVENT_BACK });
 }
 
+/** See ui/core/widget.h's ui_grid_add_nav_up_button()/_down_button() doc
+ * comment. Only ever added when rebuild_job_list() below determines the
+ * job list overflows LIST_VISIBLE_ROWS -- unlike job_create_screen.c's
+ * always-overflowing form, this depends on the live directory scan.
+ *
+ * Restores ctx->scroll_anchor_idx into ctx->grid.focus_idx before moving
+ * focus -- see that field's doc comment in open_job_screen.h for why this
+ * is necessary: by the time this callback runs, UI_EVENT_TAP has already
+ * relocated grid.focus_idx to this very button, and ui_grid_move_focus()
+ * searches outward from whatever focus_idx currently is. Without this
+ * restore, Down would always land on the row nearest the button itself
+ * (the topmost visible row) rather than progressing from wherever the
+ * person actually was. */
+static void on_nav_up(UiWidget *self, void *screen_ctx)
+{
+    OpenJobScreenCtx *ctx = (OpenJobScreenCtx *)screen_ctx;
+    (void)self;
+    if (ctx->scroll_anchor_idx >= 0 && ctx->scroll_anchor_idx < (int32_t)ctx->grid.count)
+        ctx->grid.focus_idx = ctx->scroll_anchor_idx;
+    ui_grid_move_focus(&ctx->grid, UI_EVENT_NAV_UP);
+    ctx->scroll_anchor_idx = ctx->grid.focus_idx;
+}
+
+static void on_nav_down(UiWidget *self, void *screen_ctx)
+{
+    OpenJobScreenCtx *ctx = (OpenJobScreenCtx *)screen_ctx;
+    (void)self;
+    if (ctx->scroll_anchor_idx >= 0 && ctx->scroll_anchor_idx < (int32_t)ctx->grid.count)
+        ctx->grid.focus_idx = ctx->scroll_anchor_idx;
+    ui_grid_move_focus(&ctx->grid, UI_EVENT_NAV_DOWN);
+    ctx->scroll_anchor_idx = ctx->grid.focus_idx;
+}
+
 /* -------------------------------------------------------------------------
  * Lifecycle
  * ---------------------------------------------------------------------- */
@@ -204,6 +254,17 @@ static void rebuild_job_list(OpenJobScreenCtx *ctx)
      * placement comments. If the list is empty, this is the only
      * focusable widget, so focus correctly lands here instead. */
     ui_grid_add_back_button(&ctx->grid, on_back);
+
+    /* Only when the list actually overflows the visible region -- see
+     * on_nav_up()/on_nav_down()'s doc comment above. A short job list
+     * (<= LIST_VISIBLE_ROWS) needs no scrolling at all, so these stay
+     * absent rather than cluttering a screen with nothing to scroll. */
+    if (ctx->job_count > LIST_VISIBLE_ROWS) {
+        ui_grid_add_nav_up_button(&ctx->grid,
+            (UiRect){NAV_BUTTON_X, NAV_UP_Y, UI_NAV_BUTTON_W, UI_NAV_BUTTON_H}, on_nav_up);
+        ui_grid_add_nav_down_button(&ctx->grid,
+            (UiRect){NAV_BUTTON_X, NAV_DOWN_Y, UI_NAV_BUTTON_W, UI_NAV_BUTTON_H}, on_nav_down);
+    }
 }
 
 static void open_job_on_enter(void *raw_ctx)
@@ -219,6 +280,16 @@ static bool open_job_on_event(void *raw_ctx, UiEvent ev)
 
     if (ev.type == UI_EVENT_BACK)
         return false; /* unconsumed -- stack pops back to Job Setup */
+
+    /* Capture focus_idx as it stands *before* this event reaches the
+     * grid -- see scroll_anchor_idx's doc comment in open_job_screen.h.
+     * Whatever is correctly focused right now (a job row the person
+     * tapped, or a row Up/Down already moved to) is exactly what should
+     * anchor the *next* Up/Down search, before TAP has a chance to steal
+     * focus onto a button. Skipped for events that can't move focus
+     * (e.g. BACK, already handled above) since there's nothing to
+     * preserve against. */
+    ctx->scroll_anchor_idx = ctx->grid.focus_idx;
 
     return ui_grid_handle_event(&ctx->grid, ev);
 }

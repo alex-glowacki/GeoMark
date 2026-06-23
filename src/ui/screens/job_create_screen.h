@@ -36,6 +36,7 @@
 #define GEOMARK_UI_SCREENS_JOB_CREATE_SCREEN_H
 
 #include <stddef.h>
+#include <stdint.h>
 
 #include "collector/job_metadata.h"
 #include "ui/core/keyboard.h"
@@ -112,6 +113,19 @@ typedef struct {
     JobCreateStatus status;
     size_t status_job_name_len_snapshot; /* see new_project_screen.h's
                                           * identical pattern for why */
+
+    /**
+     * grid.focus_idx captured by job_create_on_event() immediately before
+     * forwarding an event to ui_grid_handle_event() -- identical
+     * mechanism and rationale to open_job_screen.h's scroll_anchor_idx
+     * (see that header's doc comment for the full explanation). Applies
+     * here too even though this screen's nav buttons are unconditional
+     * (always overflowing, see job_create_screen.c's top-of-file layout
+     * comment) -- the focus-stealing problem this fixes is caused by
+     * UI_EVENT_TAP itself, not by whether the buttons are conditional. -1
+     * means "nothing focused yet".
+     */
+    int32_t scroll_anchor_idx;
 } JobCreateScreenCtx;
 
 /**

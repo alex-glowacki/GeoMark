@@ -41,6 +41,7 @@
 #define GEOMARK_UI_SCREENS_CONTINUE_PROJECT_SCREEN_H
 
 #include <stddef.h>
+#include <stdint.h>
 
 #include "ui/core/screen_stack.h"
 #include "ui/core/widget.h"
@@ -74,6 +75,19 @@ typedef struct {
     size_t project_count;
 
     ContinueProjectStatus status;
+
+    /**
+     * grid.focus_idx captured by continue_project_on_event() immediately
+     * before forwarding an event to ui_grid_handle_event() -- identical
+     * mechanism and rationale to open_job_screen.h's scroll_anchor_idx
+     * (see that header's doc comment for the full explanation of why
+     * this is necessary: UI_EVENT_TAP relocates focus onto a tapped nav
+     * button before firing its on_activate, so without restoring this
+     * saved value first, Up/Down would always search outward from the
+     * button's own position rather than from wherever the person was
+     * actually scrolling). -1 means "nothing focused yet".
+     */
+    int32_t scroll_anchor_idx;
 } ContinueProjectScreenCtx;
 
 /**

@@ -38,6 +38,7 @@
 #define GEOMARK_UI_SCREENS_OPEN_JOB_SCREEN_H
 
 #include <stddef.h>
+#include <stdint.h>
 
 #include "collector/job_metadata.h"
 #include "ui/core/screen_stack.h"
@@ -83,6 +84,25 @@ typedef struct {
     gm_job_metadata_t loaded_meta; /* filled by job_metadata_load() on selection */
 
     OpenJobStatus status;
+
+    /**
+     * grid.focus_idx captured by open_job_on_event() immediately before
+     * forwarding an event to ui_grid_handle_event() -- needed because
+     * UI_EVENT_TAP relocates grid.focus_idx to whatever was tapped
+     * *before* firing on_activate (see widget.c's UI_EVENT_TAP case), so
+     * by the time on_nav_up()/on_nav_down() runs, grid.focus_idx already
+     * points at the nav button itself, not wherever the person was
+     * actually scrolling from. ui_grid_move_focus() searches geometrically
+     * outward from whatever grid.focus_idx currently is, so without this,
+     * Down would always compute "nearest row below the Down button" --
+     * which is always the topmost visible row, every single tap, never
+     * progressing further down the list. on_nav_up()/on_nav_down()
+     * restore this value into grid.focus_idx before calling
+     * ui_grid_move_focus(), so the search is anchored at the row the
+     * person was actually on. -1 means "nothing focused yet" (matches
+     * UiWidgetGrid::focus_idx's own convention).
+     */
+    int32_t scroll_anchor_idx;
 } OpenJobScreenCtx;
 
 /**
