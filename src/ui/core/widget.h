@@ -233,6 +233,52 @@ UiWidget *ui_grid_add_dropdown(UiWidgetGrid *grid, UiRect rect, const char *labe
 UiWidget *ui_grid_add_back_button(UiWidgetGrid *grid,
                                   void (*on_activate)(UiWidget *self, void *screen_ctx));
 
+/* --------------------------------------------------------------------------
+ * Nav buttons — touch-only replacement for the physical d-pad's Up/Down,
+ * scoped to vertical scroll only (see ui_grid_move_focus()'s doc comment:
+ * there is no scroll_x anywhere in this struct, so Left/Right have no
+ * scrolling role here -- Up/Down covers every scroll_region use in this
+ * codebase as of this writing).
+ *
+ * Unlike the back button, placement is NOT fully fixed: callers supply
+ * their own rect, since some screens (Job Create) always overflow their
+ * scroll region and show these unconditionally, while others (Open Job,
+ * Continue Project) only show them when the current entry count actually
+ * overflows the visible list region -- a runtime check, not a layout
+ * constant. UI_NAV_BUTTON_W/H below is a sizing convention (matches the
+ * back button's own footprint, for visual/tap-target consistency) for
+ * callers to build their rect from, not a fixed position.
+ *
+ * Same caller-supplied-on_activate convention as ui_grid_add_button() and
+ * ui_grid_add_back_button() -- this helper does not call
+ * ui_grid_move_focus() itself, since doing so requires the grid pointer,
+ * which on_activate's (UiWidget *self, void *screen_ctx) signature does
+ * not provide (only the screen's own ctx does, via its &ctx->grid member).
+ * Every screen's own on_nav_up()/on_nav_down() callback should call
+ * ui_grid_move_focus(&ctx->grid, UI_EVENT_NAV_UP/DOWN) directly -- see
+ * each screen's own on_nav_up()/on_nav_down() for the one-line pattern,
+ * same spirit as on_back()'s ui_stack_dispatch_event() one-liner.
+ * -------------------------------------------------------------------------- */
+
+#define UI_NAV_BUTTON_W 70
+#define UI_NAV_BUTTON_H 28
+
+/**
+ * Add a single "Up" button at the given rect. Caller picks the rect (see
+ * file-level doc comment above for why) and supplies on_activate, which
+ * should call ui_grid_move_focus(&ctx->grid, UI_EVENT_NAV_UP).
+ */
+UiWidget *ui_grid_add_nav_up_button(UiWidgetGrid *grid, UiRect rect,
+                                    void (*on_activate)(UiWidget *self, void *screen_ctx));
+
+/**
+ * Add a single "Down" button at the given rect. Caller picks the rect (see
+ * file-level doc comment above for why) and supplies on_activate, which
+ * should call ui_grid_move_focus(&ctx->grid, UI_EVENT_NAV_DOWN).
+ */
+UiWidget *ui_grid_add_nav_down_button(UiWidgetGrid *grid, UiRect rect,
+                                      void (*on_activate)(UiWidget *self, void *screen_ctx));
+
 /**
  * The rect a widget actually renders/hit-tests at: its literal rect,
  * shifted up by grid->scroll_y if the widget is scrollable (see

@@ -114,6 +114,18 @@ UiWidget *ui_grid_add_back_button(UiWidgetGrid *grid,
     return ui_grid_add_button(grid, rect, "< Back", on_activate);
 }
 
+UiWidget *ui_grid_add_nav_up_button(UiWidgetGrid *grid, UiRect rect,
+                                    void (*on_activate)(UiWidget *self, void *screen_ctx))
+{
+    return ui_grid_add_button(grid, rect, "Up", on_activate);
+}
+
+UiWidget *ui_grid_add_nav_down_button(UiWidgetGrid *grid, UiRect rect,
+                                      void (*on_activate)(UiWidget *self, void *screen_ctx))
+{
+    return ui_grid_add_button(grid, rect, "Down", on_activate);
+}
+
 void ui_widget_mark_scrollable(UiWidget *w)
 {
     if (!w) return;
