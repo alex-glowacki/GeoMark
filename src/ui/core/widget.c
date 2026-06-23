@@ -107,6 +107,13 @@ UiWidget *ui_grid_add_dropdown(UiWidgetGrid *grid, UiRect rect, const char *labe
     return w;
 }
 
+UiWidget *ui_grid_add_back_button(UiWidgetGrid *grid,
+                                  void (*on_activate)(UiWidget *self, void *screen_ctx))
+{
+    UiRect rect = { UI_BACK_BUTTON_X, UI_BACK_BUTTON_Y, UI_BACK_BUTTON_W, UI_BACK_BUTTON_H };
+    return ui_grid_add_button(grid, rect, "< Back", on_activate);
+}
+
 void ui_widget_mark_scrollable(UiWidget *w)
 {
     if (!w) return;
@@ -133,23 +140,6 @@ bool ui_widget_rect_contains(const UiRect *r, uint16_t x, uint16_t y)
 static int32_t rect_center_x(const UiRect *r) { return (int32_t)r->x + (int32_t)r->w / 2; }
 static int32_t rect_center_y(const UiRect *r) { return (int32_t)r->y + (int32_t)r->h / 2; }
 
-/**
- * The rect a widget actually renders/hit-tests at when its effective
- * (scrolled) position is on-screen, i.e. effective y >= 0.
- *
- * UiRect.y is uint16_t, so this function cannot represent a widget
- * scrolled above y=0 (a negative effective position) without either
- * wrapping (corrupting the value) or saturating (which would make a
- * far-off-screen widget look identical to one sitting exactly at the
- * region's top edge to any caller that only looks at this return value).
- * Every caller that needs a correct in/out-of-view decision -- hit
- * testing, render-skip, and the auto-scroll-into-view logic in
- * ui_grid_move_focus() -- therefore computes the signed effective
- * top/bottom itself from rect.y and scroll_y directly, and only calls
- * this function once it already knows the result will be non-negative
- * (e.g. ui_grid_render() checks overlap in signed space first, then
- * calls this only for widgets it has already decided to draw).
- */
 UiRect ui_widget_effective_rect(const UiWidget *w, const UiWidgetGrid *grid)
 {
     UiRect r = w->rect;
@@ -205,8 +195,6 @@ bool ui_grid_move_focus(UiWidgetGrid *grid, UiEventType dir)
         default: continue;
         }
 
-        /* Weight the perpendicular offset heavily so navigation prefers
-         * widgets aligned with the current one over diagonal jumps. */
         int64_t score = (int64_t)primary * primary + (int64_t)perp * perp * 4;
 
         if (best_idx < 0 || score < best_score) {
@@ -222,22 +210,6 @@ bool ui_grid_move_focus(UiWidgetGrid *grid, UiEventType dir)
     grid->focus_idx = best_idx;
     grid->widgets[best_idx].focused = true;
 
-    /* If scrolling is enabled and the newly-focused widget is a
-     * scrollable one currently outside the visible region, scroll just
-     * enough to bring it fully into view -- never leave focus on
-     * something the person can't see. Non-scrollable widgets (fixed
-     * chrome) are never affected.
-     *
-     * Computed directly in signed arithmetic rather than by reading
-     * ui_widget_effective_rect()'s UiRect back out: UiRect.y is
-     * uint16_t, which cannot represent a widget that has scrolled above
-     * the viewport (a legitimately negative effective Y) -- casting a
-     * negative value into it wraps around to a huge positive number
-     * instead (e.g. -16 -> 65520), corrupting every comparison and the
-     * scroll_y accumulator itself. The fix is to never let a negative
-     * effective Y round-trip through a uint16_t at all: do the
-     * comparison here in plain int32_t, using the widget's literal
-     * (always non-negative, since UiRect.y is unsigned) rect.y directly. */
     if (scroll_region_active(grid)) {
         const UiWidget *focused = &grid->widgets[best_idx];
         if (focused->scrollable) {
@@ -266,7 +238,7 @@ int32_t ui_grid_hit_test(const UiWidgetGrid *grid, uint16_t x, uint16_t y)
 
         int32_t eff_top = w->scrollable ? (int32_t)w->rect.y - grid->scroll_y
                                         : (int32_t)w->rect.y;
-        if (eff_top < 0) continue; /* scrolled above the screen -- can't be tapped */
+        if (eff_top < 0) continue;
 
         UiRect eff = w->rect;
         eff.y = (uint16_t)eff_top;

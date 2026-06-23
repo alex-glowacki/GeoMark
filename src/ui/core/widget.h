@@ -190,6 +190,49 @@ UiWidget *ui_grid_add_dropdown(UiWidgetGrid *grid, UiRect rect, const char *labe
                                const char *const *options, uint32_t option_count,
                                uint32_t initial_selected);
 
+/* --------------------------------------------------------------------------
+ * Back button — touch-only replacement for the physical Left/BACK button.
+ *
+ * Fixed top-left rect, identical on every screen, so the person always
+ * knows where to tap regardless of which screen is showing. Placed at
+ * UI_BACK_BUTTON_Y=4..32, comfortably above every screen's own centered
+ * title text (drawn at y=8 or y=24 depending on the screen, scale 2,
+ * 14px tall -- confirmed against every *_screen_draw.c in this codebase)
+ * and above Measure Points' PANEL_TOP_Y=40 map/status panel, so this rect
+ * is safe to add unconditionally without checking each screen's own
+ * layout. x=8..78 is also clear of every screen's title at every title
+ * string length actually used (shortest realistic centered title still
+ * leaves tx > 170 -- see "Continue Existing Project", the longest title
+ * in this codebase, computed against TFT_WIDTH=800).
+ *
+ * Like ui_grid_add_button(), the caller still supplies on_activate --
+ * this helper does not call ui_stack_pop() or ui_stack_dispatch_event()
+ * itself, since it has no UiScreenStack* of its own (grid->screen_ctx is
+ * opaque to this module). Every screen's own on_back() callback should
+ * dispatch a UI_EVENT_BACK through ui_stack_dispatch_event() rather than
+ * popping directly -- that reuses each screen's own existing UI_EVENT_BACK
+ * handling in on_event() (e.g. Measure Points closing an open overlay
+ * first) instead of duplicating that logic here. See each screen's own
+ * on_back() for the one-line pattern.
+ * -------------------------------------------------------------------------- */
+
+#define UI_BACK_BUTTON_X 8
+#define UI_BACK_BUTTON_Y 4
+#define UI_BACK_BUTTON_W 70
+#define UI_BACK_BUTTON_H 28
+
+/**
+ * Add the standard "< Back" button at the fixed top-left rect above.
+ * Same caller-supplied-on_activate convention as ui_grid_add_button() --
+ * see that function and the file-level doc comment above for why. Call
+ * once per grid construction (including every rebuild_grid()-style call
+ * on screens that tear down and re-add their widget set, e.g.
+ * ui/screens/measure_points_screen.c), the same as any other
+ * ui_grid_add_*() call.
+ */
+UiWidget *ui_grid_add_back_button(UiWidgetGrid *grid,
+                                  void (*on_activate)(UiWidget *self, void *screen_ctx));
+
 /**
  * The rect a widget actually renders/hit-tests at: its literal rect,
  * shifted up by grid->scroll_y if the widget is scrollable (see
