@@ -6,6 +6,7 @@ Requires=geomark-connect.service
 [Service]
 Type=simple
 User=alex
+ExecStartPre=/usr/bin/setterm -cursor off -term linux </dev/tty1 >/dev/tty1
 ExecStart=/usr/local/bin/geomark --mode ui --host 192.168.10.1 --ui-preview
 Restart=always
 StandardOutput=journal
