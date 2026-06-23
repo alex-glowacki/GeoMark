@@ -918,6 +918,153 @@ static void test_open_job_status_cases(void)
 }
 
 /* =========================================================================
+ * Open Job's Up/Down nav buttons (LIST_VISIBLE_ROWS threshold) -- only
+ * added when the real on-disk job count for the active project exceeds
+ * what fits in the visible list region (6 rows, see
+ * open_job_screen.c's LIST_VISIBLE_ROWS). Short lists need no scrolling
+ * at all, so the buttons must stay absent rather than cluttering a
+ * screen with nothing to scroll -- this is the one piece of the nav
+ * button feature that can only be proven against a real
+ * OpenJobScreenCtx + real directory scan, not the mock grid
+ * tests/test_widget.c uses for the underlying focus-movement mechanism.
+ * ========================================================================= */
+
+static void make_n_job_dirs(const char *tmp_home, const char *project, int n)
+{
+    char base[300], projects[330], proj_dir[400], job_dir[460];
+    snprintf(base,     sizeof(base),     "%s/geomark-data", tmp_home);
+    snprintf(projects, sizeof(projects), "%s/projects", base);
+    snprintf(proj_dir, sizeof(proj_dir), "%s/%s", projects, project);
+    mkdir(base, 0755);
+    mkdir(projects, 0755);
+    mkdir(proj_dir, 0755);
+    for (int i = 0; i < n; i++) {
+        snprintf(job_dir, sizeof(job_dir), "%s/JOB%02d", proj_dir, i);
+        mkdir(job_dir, 0755);
+    }
+}
+
+static void test_open_job_nav_buttons_only_when_list_overflows(void)
+{
+    char tmpl[] = "/tmp/geomark_test_home_XXXXXX";
+    char *tmp_home = mkdtemp(tmpl);
+    ASSERT(tmp_home != NULL, "mkdtemp created a disposable HOME for this test");
+
+    const char *real_home = getenv("HOME");
+    char real_home_buf[512] = {0};
+    if (real_home) strncpy(real_home_buf, real_home, sizeof(real_home_buf) - 1);
+    setenv("HOME", tmp_home, 1);
+
+    UiScreenStack stack;
+    ui_stack_init(&stack);
+    JobContext job_ctx;
+    job_context_init(&job_ctx);
+    PlaceholderScreenCtx measure_points_stub;
+    placeholder_screen_init(&measure_points_stub, &stack, "Measure Points -- not built yet");
+
+    /* Case 1: 3 jobs -- fits within LIST_VISIBLE_ROWS (6), no scrolling
+     * needed, nav buttons must be absent. */
+    make_n_job_dirs(tmp_home, "SHORTPROJ", 3);
+    ProjectContext short_proj;
+    project_context_init(&short_proj);
+    project_context_set(&short_proj, "SHORTPROJ");
+
+    OpenJobScreenCtx short_ctx;
+    open_job_screen_init(&short_ctx, &stack,
+                         placeholder_screen_as_ui_screen(&measure_points_stub),
+                         &short_proj, &job_ctx);
+    ui_stack_push(&stack, open_job_screen_as_ui_screen(&short_ctx));
+
+    ASSERT(short_ctx.job_count == 3, "3 job directories scanned correctly");
+    ASSERT(find_widget(&short_ctx.grid, WIDGET_BUTTON, "Up") == NULL,
+          "A 3-job list (<= LIST_VISIBLE_ROWS) has no Up button");
+    ASSERT(find_widget(&short_ctx.grid, WIDGET_BUTTON, "Down") == NULL,
+          "A 3-job list (<= LIST_VISIBLE_ROWS) has no Down button");
+    ui_stack_pop(&stack);
+
+    /* Case 2: 10 jobs -- exceeds LIST_VISIBLE_ROWS (6), nav buttons must
+     * be present and, when tapped, must actually progress focus through
+     * the list rather than getting stuck (see open_job_screen.c's
+     * on_nav_down() doc comment for the bug this proves is fixed). */
+    make_n_job_dirs(tmp_home, "LONGPROJ", 10);
+    ProjectContext long_proj;
+    project_context_init(&long_proj);
+    project_context_set(&long_proj, "LONGPROJ");
+
+    OpenJobScreenCtx long_ctx;
+    open_job_screen_init(&long_ctx, &stack,
+                         placeholder_screen_as_ui_screen(&measure_points_stub),
+                         &long_proj, &job_ctx);
+    ui_stack_push(&stack, open_job_screen_as_ui_screen(&long_ctx));
+
+    ASSERT(long_ctx.job_count == 10, "10 job directories scanned correctly");
+    UiWidget *down = find_widget(&long_ctx.grid, WIDGET_BUTTON, "Down");
+    UiWidget *up   = find_widget(&long_ctx.grid, WIDGET_BUTTON, "Up");
+    ASSERT(down != NULL, "A 10-job list (> LIST_VISIBLE_ROWS) has a Down button");
+    ASSERT(up != NULL, "A 10-job list (> LIST_VISIBLE_ROWS) has an Up button");
+
+    /* Focus starts on job 0 (alphabetically first directory entry --
+     * readdir() order is not guaranteed, but ui_grid_focus_first() always
+     * lands on whichever button was added first, which is consistent
+     * within this single test run). Tap Down three times via
+     * ui_stack_dispatch_event() (exercising the real on_event() capture
+     * step, not a direct grid call) and confirm focus actually advances
+     * through three distinct job buttons rather than bouncing back to
+     * the same one. */
+    UiWidget *focus_after[4];
+    focus_after[0] = &long_ctx.grid.widgets[long_ctx.grid.focus_idx];
+
+    UiEvent tap_down = { .type = UI_EVENT_TAP, .x = (uint16_t)(down->rect.x + 1),
+                         .y = (uint16_t)(down->rect.y + 1) };
+    for (int i = 1; i <= 3; i++) {
+        ui_stack_dispatch_event(&stack, tap_down);
+        focus_after[i] = &long_ctx.grid.widgets[long_ctx.grid.focus_idx];
+    }
+
+    ASSERT(focus_after[0] != focus_after[1] && focus_after[1] != focus_after[2] &&
+          focus_after[2] != focus_after[3],
+          "Three Down taps land on three DIFFERENT job buttons each time -- "
+          "real progression, not stuck bouncing back to the nearest row");
+    ASSERT(focus_after[1]->kind == WIDGET_BUTTON && focus_after[2]->kind == WIDGET_BUTTON &&
+          focus_after[3]->kind == WIDGET_BUTTON,
+          "Each landed widget is still a real job button, not the Down button itself");
+
+    /* Tap Up once and confirm it moves back toward focus_after[2]. */
+    UiEvent tap_up = { .type = UI_EVENT_TAP, .x = (uint16_t)(up->rect.x + 1),
+                       .y = (uint16_t)(up->rect.y + 1) };
+    ui_stack_dispatch_event(&stack, tap_up);
+    UiWidget *after_up = &long_ctx.grid.widgets[long_ctx.grid.focus_idx];
+    ASSERT(after_up == focus_after[2],
+          "Up tap after three Downs moves focus back to the previous row, not to Up's own corner");
+
+    ui_stack_pop(&stack);
+
+    char base[300], projects[330], proj1[400], proj2[400], job_dir[460];
+    snprintf(base,     sizeof(base),     "%s/geomark-data", tmp_home);
+    snprintf(projects, sizeof(projects), "%s/projects", base);
+    snprintf(proj1,    sizeof(proj1),    "%s/SHORTPROJ", projects);
+    snprintf(proj2,    sizeof(proj2),    "%s/LONGPROJ", projects);
+    for (int i = 0; i < 3; i++) {
+        snprintf(job_dir, sizeof(job_dir), "%s/JOB%02d", proj1, i);
+        rmdir(job_dir);
+    }
+    for (int i = 0; i < 10; i++) {
+        snprintf(job_dir, sizeof(job_dir), "%s/JOB%02d", proj2, i);
+        rmdir(job_dir);
+    }
+    rmdir(proj1);
+    rmdir(proj2);
+    rmdir(projects);
+    rmdir(base);
+    rmdir(tmp_home);
+
+    if (real_home_buf[0])
+        setenv("HOME", real_home_buf, 1);
+    else
+        unsetenv("HOME");
+}
+
+/* =========================================================================
  * End-to-end: Continue Existing Project closes the real gap found during
  * hardware testing -- ProjectContext lives only in memory for one
  * geomark process, so restarting the UI loses track of which project
@@ -1978,6 +2125,7 @@ int main(void)
     test_job_setup_and_create_end_to_end();
     test_open_job_end_to_end();
     test_open_job_status_cases();
+    test_open_job_nav_buttons_only_when_list_overflows();
     test_continue_project_end_to_end();
     test_continue_project_status_cases();
     test_measure_points_no_job_status();

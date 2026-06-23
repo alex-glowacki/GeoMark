@@ -395,6 +395,202 @@ static void test_scroll_grid_capacity_61_widgets(void)
 }
 
 /* =========================================================================
+ * Nav buttons (ui_grid_add_nav_up_button / _down_button) -- touch-only
+ * replacement for the physical d-pad's Up/Down, scoped to vertical
+ * scroll only (no scroll_x exists in this codebase -- see widget.h's nav
+ * button doc comment). Unlike the back button, these take a
+ * caller-supplied rect rather than a fixed one (placement differs by
+ * screen, and some screens only add them conditionally), so this module
+ * verifies: correct widget kind/label/rect echo, fires on_activate via
+ * both ACTIVATE and TAP same as any other button, and -- the one thing
+ * that actually matters for these specific buttons -- that the real
+ * screen-level wiring pattern (restore a saved scroll_anchor_idx into
+ * grid.focus_idx before calling ui_grid_move_focus(), see
+ * open_job_screen.c's on_nav_down() for the production version) actually
+ * progresses through a list of rows rather than getting stuck.
+ *
+ * That restore step is NOT optional set-dressing: UI_EVENT_TAP relocates
+ * grid.focus_idx to whatever was tapped (here, the nav button itself)
+ * *before* firing on_activate (see widget.c's UI_EVENT_TAP case). A nav
+ * button's on_activate that calls ui_grid_move_focus() without first
+ * restoring the pre-tap focus would search geometrically outward from
+ * the BUTTON's own position every time -- which, for a button fixed in
+ * a screen's top-right corner, always resolves to the row nearest that
+ * corner (the topmost visible row) and never progresses further. This
+ * was caught by an earlier version of the test below before any screen
+ * shipped it; the mock ctx struct here exists specifically to exercise
+ * the fix, not just the naive (broken) wiring.
+ * ========================================================================= */
+
+/** Minimal stand-in for what every real screen's ctx struct provides:
+ * a grid and a scroll_anchor_idx, with the exact same capture/restore
+ * responsibilities split between on_event and the nav callbacks that
+ * open_job_screen.c, continue_project_screen.c, and job_create_screen.c
+ * all use. screen_ctx in this test IS this struct (not the bare grid),
+ * mirroring how a real screen passes &ctx (not &ctx->grid) to
+ * ui_grid_init(). */
+typedef struct {
+    UiWidgetGrid grid;
+    int32_t scroll_anchor_idx;
+} MockNavScreenCtx;
+
+/** Mirrors a real screen's on_event(): capture focus_idx before forwarding
+ * to the grid. Test-only stand-in for e.g. open_job_on_event(). */
+static bool mock_nav_screen_on_event(MockNavScreenCtx *ctx, UiEvent ev)
+{
+    ctx->scroll_anchor_idx = ctx->grid.focus_idx;
+    return ui_grid_handle_event(&ctx->grid, ev);
+}
+
+/** Mirrors a real screen's on_nav_down() exactly (see open_job_screen.c). */
+static void on_nav_down(UiWidget *self, void *screen_ctx)
+{
+    MockNavScreenCtx *ctx = (MockNavScreenCtx *)screen_ctx;
+    (void)self;
+    if (ctx->scroll_anchor_idx >= 0 && ctx->scroll_anchor_idx < (int32_t)ctx->grid.count)
+        ctx->grid.focus_idx = ctx->scroll_anchor_idx;
+    ui_grid_move_focus(&ctx->grid, UI_EVENT_NAV_DOWN);
+    ctx->scroll_anchor_idx = ctx->grid.focus_idx;
+}
+
+/** Mirrors a real screen's on_nav_up() exactly (see open_job_screen.c). */
+static void on_nav_up(UiWidget *self, void *screen_ctx)
+{
+    MockNavScreenCtx *ctx = (MockNavScreenCtx *)screen_ctx;
+    (void)self;
+    if (ctx->scroll_anchor_idx >= 0 && ctx->scroll_anchor_idx < (int32_t)ctx->grid.count)
+        ctx->grid.focus_idx = ctx->scroll_anchor_idx;
+    ui_grid_move_focus(&ctx->grid, UI_EVENT_NAV_UP);
+    ctx->scroll_anchor_idx = ctx->grid.focus_idx;
+}
+
+static void test_nav_up_button_rect_label_and_activate(void)
+{
+    ActivateProbe probe = {0};
+    UiWidgetGrid   grid;
+    ui_grid_init(&grid, &probe);
+
+    UiRect r = { 722, 4, UI_NAV_BUTTON_W, UI_NAV_BUTTON_H };
+    UiWidget *up = ui_grid_add_nav_up_button(&grid, r, probe_activate);
+    ASSERT(up != NULL, "Up button allocated");
+    ASSERT(up->kind == WIDGET_BUTTON, "Up button is a WIDGET_BUTTON");
+    ASSERT(up->focusable, "Up button is focusable");
+    ASSERT(up->label && strcmp(up->label, "Up") == 0, "Up button labeled \"Up\"");
+    ASSERT(up->rect.x == r.x && up->rect.y == r.y &&
+          up->rect.w == r.w && up->rect.h == r.h,
+          "Up button echoes the caller-supplied rect exactly");
+
+    ui_grid_focus_first(&grid);
+    UiEvent activate = { .type = UI_EVENT_ACTIVATE };
+    ASSERT(ui_grid_handle_event(&grid, activate), "ACTIVATE on the focused Up button is handled");
+    ASSERT(probe.activate_count == 1 && probe.last_widget == up,
+          "Up button fires the caller-supplied on_activate");
+
+    UiEvent tap = { .type = UI_EVENT_TAP, .x = (uint16_t)(r.x + 1), .y = (uint16_t)(r.y + 1) };
+    ASSERT(ui_grid_handle_event(&grid, tap), "Tap on the Up button's rect is handled");
+    ASSERT(probe.activate_count == 2, "Tap fires on_activate a second time");
+}
+
+static void test_nav_down_button_rect_label_and_activate(void)
+{
+    ActivateProbe probe = {0};
+    UiWidgetGrid   grid;
+    ui_grid_init(&grid, &probe);
+
+    UiRect r = { 722, 36, UI_NAV_BUTTON_W, UI_NAV_BUTTON_H };
+    UiWidget *down = ui_grid_add_nav_down_button(&grid, r, probe_activate);
+    ASSERT(down != NULL, "Down button allocated");
+    ASSERT(down->kind == WIDGET_BUTTON, "Down button is a WIDGET_BUTTON");
+    ASSERT(down->focusable, "Down button is focusable");
+    ASSERT(down->label && strcmp(down->label, "Down") == 0, "Down button labeled \"Down\"");
+    ASSERT(down->rect.x == r.x && down->rect.y == r.y &&
+          down->rect.w == r.w && down->rect.h == r.h,
+          "Down button echoes the caller-supplied rect exactly");
+
+    ui_grid_focus_first(&grid);
+    UiEvent activate = { .type = UI_EVENT_ACTIVATE };
+    ASSERT(ui_grid_handle_event(&grid, activate), "ACTIVATE on the focused Down button is handled");
+    ASSERT(probe.activate_count == 1 && probe.last_widget == down,
+          "Down button fires the caller-supplied on_activate");
+
+    UiEvent tap = { .type = UI_EVENT_TAP, .x = (uint16_t)(r.x + 1), .y = (uint16_t)(r.y + 1) };
+    ASSERT(ui_grid_handle_event(&grid, tap), "Tap on the Down button's rect is handled");
+    ASSERT(probe.activate_count == 2, "Tap fires on_activate a second time");
+}
+
+/**
+ * The real-world wiring (see file-level doc comment above): a screen's
+ * on_event() captures grid.focus_idx into scroll_anchor_idx BEFORE every
+ * event reaches the grid, and on_nav_down()'s on_activate restores that
+ * saved index as the search anchor before calling ui_grid_move_focus().
+ * This test builds three focusable rows plus a Down button using the
+ * MockNavScreenCtx stand-in, drives every tap through
+ * mock_nav_screen_on_event() (not ui_grid_handle_event() directly, since
+ * the capture step that makes this work lives in on_event, not in the
+ * grid itself), and confirms repeated Down taps walk focus through the
+ * stack progressively -- Row0 -> Row1 -> Row2 -- ending at an edge (no
+ * fourth row) the same way ui_grid_move_focus() already behaves when
+ * called directly.
+ */
+static void test_nav_down_button_moves_focus_through_stack(void)
+{
+    MockNavScreenCtx ctx = {0};
+    ui_grid_init(&ctx.grid, &ctx);
+
+    UiWidget *row0 = ui_grid_add_button(&ctx.grid, (UiRect){20,  90, 700, 48}, "Row0", NULL);
+    UiWidget *row1 = ui_grid_add_button(&ctx.grid, (UiRect){20, 158, 700, 48}, "Row1", NULL);
+    UiWidget *row2 = ui_grid_add_button(&ctx.grid, (UiRect){20, 226, 700, 48}, "Row2", NULL);
+    ui_grid_add_nav_down_button(&ctx.grid, (UiRect){722, 4, UI_NAV_BUTTON_W, UI_NAV_BUTTON_H},
+                                on_nav_down);
+
+    ui_grid_focus_first(&ctx.grid);
+    ASSERT(&ctx.grid.widgets[ctx.grid.focus_idx] == row0, "Starts focused on Row0");
+
+    UiEvent tap_down = { .type = UI_EVENT_TAP, .x = 723, .y = 5 };
+    ASSERT(mock_nav_screen_on_event(&ctx, tap_down), "Tap on Down button is handled");
+    ASSERT(&ctx.grid.widgets[ctx.grid.focus_idx] == row1,
+          "First Down tap moves focus from Row0 to Row1 (not back to Row0 -- the bug "
+          "this anchor-restore fixes would land here every time)");
+
+    ASSERT(mock_nav_screen_on_event(&ctx, tap_down), "Second Down tap is handled");
+    ASSERT(&ctx.grid.widgets[ctx.grid.focus_idx] == row2,
+          "Second Down tap moves focus from Row1 to Row2 -- real progression, not stuck");
+
+    /* At the bottom edge -- ui_grid_move_focus() returns false (no
+     * candidate below Row2), same edge behavior as direct callers get;
+     * the Down button does not wrap or crash at the edge. */
+    mock_nav_screen_on_event(&ctx, tap_down);
+    ASSERT(&ctx.grid.widgets[ctx.grid.focus_idx] == row2,
+          "Down tap at the bottom edge leaves focus on the last row, does not wrap");
+}
+
+static void test_nav_up_button_moves_focus_through_stack(void)
+{
+    MockNavScreenCtx ctx = {0};
+    ui_grid_init(&ctx.grid, &ctx);
+
+    UiWidget *row0 = ui_grid_add_button(&ctx.grid, (UiRect){20,  90, 700, 48}, "Row0", NULL);
+    UiWidget *row1 = ui_grid_add_button(&ctx.grid, (UiRect){20, 158, 700, 48}, "Row1", NULL);
+    ui_grid_add_nav_up_button(&ctx.grid, (UiRect){722, 4, UI_NAV_BUTTON_W, UI_NAV_BUTTON_H},
+                              on_nav_up);
+
+    /* Start focused on Row1 (the bottom row), same as if the person had
+     * already scrolled down before reaching for Up. Driven through
+     * mock_nav_screen_on_event() so scroll_anchor_idx tracks correctly,
+     * same as the real on_enter -> first interaction sequence. */
+    ui_grid_focus_first(&ctx.grid);
+    UiEvent tap_row1 = { .type = UI_EVENT_TAP, .x = 25, .y = 159 };
+    mock_nav_screen_on_event(&ctx, tap_row1);
+    ASSERT(&ctx.grid.widgets[ctx.grid.focus_idx] == row1,
+          "Starts focused on Row1 (simulated prior tap)");
+
+    UiEvent tap_up = { .type = UI_EVENT_TAP, .x = 723, .y = 5 };
+    ASSERT(mock_nav_screen_on_event(&ctx, tap_up), "Tap on Up button is handled");
+    ASSERT(&ctx.grid.widgets[ctx.grid.focus_idx] == row0,
+          "Up tap moves focus from Row1 back to Row0 (not toward the button's own corner)");
+}
+
+/* =========================================================================
  * Back button (ui_grid_add_back_button) -- touch-only replacement for the
  * physical Left/BACK button, added to every screen's grid (see
  * ui/core/widget.h's doc comment for the full rationale). This module has
@@ -452,6 +648,10 @@ int main(void)
     test_scroll_auto_scroll_up();
     test_scroll_hit_test_before_and_after();
     test_scroll_grid_capacity_61_widgets();
+    test_nav_up_button_rect_label_and_activate();
+    test_nav_down_button_rect_label_and_activate();
+    test_nav_down_button_moves_focus_through_stack();
+    test_nav_up_button_moves_focus_through_stack();
     test_back_button_rect_and_activate();
 
     if (g_tests_failed == 0) {
