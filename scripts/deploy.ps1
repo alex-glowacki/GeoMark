@@ -52,9 +52,9 @@ function Deploy-Unit {
 }
 
 if ($Target -eq "base" -or $Target -eq "all") {
-    Deploy-Unit -Hostname $BASE_HOST -BinaryPath $BINARY_PATH_BASE -ServiceFile "systemd/geomark-base.service"
+    Deploy-Unit -Hostname $BASE_HOST -BinaryPath $BINARY_PATH_BASE -ServiceFile "deploy/base/systemd/geomark-base.service"
 }
 
 if ($Target -eq "rover" -or $Target -eq "all") {
-    Deploy-Unit -Hostname $ROVER_HOST -BinaryPath $BINARY_PATH_ROVER -ServiceFile "systemd/geomark-rover.service"
+    Deploy-Unit -Hostname $ROVER_HOST -BinaryPath $BINARY_PATH_ROVER -ServiceFile "deploy/rover/systemd/geomark-rover.service"
 }

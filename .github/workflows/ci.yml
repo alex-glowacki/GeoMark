@@ -33,7 +33,7 @@ jobs:
         run: ctest --test-dir build/host --output-on-failure
 
   cross-compile-base:
-    name: Cross-Compile Pi Base (ARMv6 32-bit)
+    name: Cross-Compile Pi Base (AArch64 64-bit)
     runs-on: ubuntu-latest
 
     steps:
@@ -46,8 +46,8 @@ jobs:
           sudo apt-get install -y \
             cmake \
             ninja-build \
-            gcc-arm-linux-gnueabihf \
-            binutils-arm-linux-gnueabihf
+            gcc-aarch64-linux-gnu \
+            binutils-aarch64-linux-gnu
 
       - name: Configure (pi-base-release)
         run: cmake --preset pi-base-release
