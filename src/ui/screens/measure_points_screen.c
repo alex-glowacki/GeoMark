@@ -322,8 +322,8 @@ static void on_capture_point(UiWidget *self, void *screen_ctx)
     pt.hdop            = ctx->latest.hdop;
     pt.num_sats        = ctx->latest.num_sats;
     pt.timestamp       = time(NULL);
-    strncpy(pt.name, ctx->name_buf, sizeof(pt.name) - 1);
-    strncpy(pt.code, ctx->code_buf, sizeof(pt.code) - 1);
+    snprintf(pt.name, sizeof(pt.name), "%.*s", (int)sizeof(pt.name) - 1, ctx->name_buf);
+    snprintf(pt.code, sizeof(pt.code), "%.*s", (int)sizeof(pt.code) - 1, ctx->code_buf);
 
     gm_status_t rc = measure_points_add(&ctx->points, pt);
     if (rc != GM_OK) {

@@ -98,9 +98,8 @@ static void scan_projects(ContinueProjectScreenCtx *ctx)
         if (stat(entry_path, &st) != 0 || !S_ISDIR(st.st_mode))
             continue;
 
-        strncpy(ctx->project_names[ctx->project_count], entry->d_name,
-                PROJECT_CONTEXT_NAME_MAX - 1);
-        ctx->project_names[ctx->project_count][PROJECT_CONTEXT_NAME_MAX - 1] = '\0';
+        snprintf(ctx->project_names[ctx->project_count], PROJECT_CONTEXT_NAME_MAX,
+                 "%.*s", PROJECT_CONTEXT_NAME_MAX - 1, entry->d_name);
         ctx->project_count++;
     }
     closedir(d);

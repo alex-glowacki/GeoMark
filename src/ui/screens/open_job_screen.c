@@ -107,8 +107,8 @@ static void scan_jobs(OpenJobScreenCtx *ctx)
         if (stat(entry_path, &st) != 0 || !S_ISDIR(st.st_mode))
             continue;
 
-        strncpy(ctx->job_names[ctx->job_count], entry->d_name, GM_JOB_NAME_MAX - 1);
-        ctx->job_names[ctx->job_count][GM_JOB_NAME_MAX - 1] = '\0';
+        snprintf(ctx->job_names[ctx->job_count], GM_JOB_NAME_MAX,
+                 "%.*s", GM_JOB_NAME_MAX - 1, entry->d_name);
         ctx->job_count++;
     }
     closedir(d);
