@@ -121,6 +121,7 @@ add_executable(test_screens
     ${PROJECT_SOURCE_DIR}/src/collector/job_metadata.c
     ${PROJECT_SOURCE_DIR}/src/collector/measure_points.c
     ${PROJECT_SOURCE_DIR}/src/collector/measure_points_export.c
+    ${PROJECT_SOURCE_DIR}/src/collector/usb_export.c
     ${PROJECT_SOURCE_DIR}/src/collector/coords.c
     ${PROJECT_SOURCE_DIR}/src/survey/codelist.c
     ${PROJECT_SOURCE_DIR}/src/ui/tft/display.c
@@ -197,3 +198,21 @@ target_include_directories(test_units PRIVATE
 )
 target_link_libraries(test_units PRIVATE m)
 add_test(NAME test_units COMMAND test_units)
+
+# test_usb_export: collector/usb_export.c's pure path-construction
+# logic (usb_export_path_for_job_under()) -- see test_usb_export.c's
+# own file-level doc comment for why usb_export_is_mounted() itself is
+# NOT covered here (live /proc/mounts state, same "keep live
+# OS/environment state out of unit tests" convention this codebase
+# already applies to net/rtk_feed_client.c). No libm dependency --
+# pure string parsing and mkdir(), no floating point.
+add_executable(test_usb_export
+    ${PROJECT_SOURCE_DIR}/tests/test_usb_export.c
+    ${PROJECT_SOURCE_DIR}/src/collector/usb_export.c
+    ${PROJECT_SOURCE_DIR}/src/util/log.c
+)
+target_include_directories(test_usb_export PRIVATE
+    ${PROJECT_SOURCE_DIR}/include
+    ${PROJECT_SOURCE_DIR}/src
+)
+add_test(NAME test_usb_export COMMAND test_usb_export)

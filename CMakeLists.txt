@@ -38,6 +38,7 @@ set(GEOMARK_SOURCES
     src/collector/job_metadata.c
     src/collector/measure_points.c
     src/collector/measure_points_export.c
+    src/collector/usb_export.c
     src/collector/export.c
     src/net/stream_server.c
     src/net/stream_client.c

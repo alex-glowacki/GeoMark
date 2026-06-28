@@ -17,16 +17,25 @@
 #define EXPORT_STATUS_Y  100
 
 /**
- * Returns the message text and whether it represents success (green)
- * or an error/info condition (orange) -- same two-color convention
- * job_create_screen_draw.c's own status_text() already establishes
- * for a status-message-below-title layout, extended here with a
- * success case that screen never needed (Job Create's own statuses
- * are all error conditions).
+ * Returns the message text and which of three visual treatments it
+ * gets: success (green, written to the USB drive), fallback (yellow,
+ * written to internal storage because the USB drive was not mounted --
+ * still a successful export, but the crew needs to know it isn't on
+ * the drive they expect to walk away with), or error/info (orange).
+ * Same status-message-below-title layout job_create_screen_draw.c's
+ * own status_text() already establishes, extended here with the two
+ * cases that screen never needed (Job Create's own statuses are all
+ * plain error conditions, with no successful-but-worth-flagging case).
  */
-static const char *status_text(ExportScreenStatus status, bool *out_is_success)
+typedef enum {
+    EXPORT_MSG_INFO_OR_ERROR = 0,
+    EXPORT_MSG_SUCCESS,
+    EXPORT_MSG_FALLBACK,
+} ExportMsgKind;
+
+static const char *status_text(ExportScreenStatus status, ExportMsgKind *out_kind)
 {
-    *out_is_success = false;
+    *out_kind = EXPORT_MSG_INFO_OR_ERROR;
     switch (status) {
     case EXPORT_SCREEN_STATUS_NO_JOB:
         return "No active job -- open or create one first";
@@ -37,11 +46,17 @@ static const char *status_text(ExportScreenStatus status, bool *out_is_success)
     case EXPORT_SCREEN_STATUS_CSV_ERROR:
         return "CSV export failed -- check storage";
     case EXPORT_SCREEN_STATUS_LANDXML_OK:
-        *out_is_success = true;
-        return "LandXML exported to export/points.xml";
+        *out_kind = EXPORT_MSG_SUCCESS;
+        return "LandXML exported to USB drive";
     case EXPORT_SCREEN_STATUS_CSV_OK:
-        *out_is_success = true;
-        return "CSV exported to export/points_export.csv";
+        *out_kind = EXPORT_MSG_SUCCESS;
+        return "CSV exported to USB drive";
+    case EXPORT_SCREEN_STATUS_LANDXML_OK_FALLBACK:
+        *out_kind = EXPORT_MSG_FALLBACK;
+        return "USB drive not found -- LandXML saved internally instead";
+    case EXPORT_SCREEN_STATUS_CSV_OK_FALLBACK:
+        *out_kind = EXPORT_MSG_FALLBACK;
+        return "USB drive not found -- CSV saved internally instead";
     case EXPORT_SCREEN_STATUS_NONE:
     default:
         return NULL;
@@ -72,13 +87,15 @@ void export_screen_render(void *raw_ctx)
     uint16_t sx = (uint16_t)((TFT_WIDTH > summary_w) ? (TFT_WIDTH - summary_w) / 2 : 4);
     display_draw_string(sx, EXPORT_SUMMARY_Y, summary, TFT_WHITE, TFT_BLACK, 1);
 
-    bool is_success = false;
-    const char *msg = status_text(ctx->status, &is_success);
+    ExportMsgKind kind = EXPORT_MSG_INFO_OR_ERROR;
+    const char *msg = status_text(ctx->status, &kind);
     if (msg) {
         uint16_t msg_w = (uint16_t)(strlen(msg) * (TFT_FONT_W + 1));
         uint16_t mx    = (uint16_t)((TFT_WIDTH > msg_w) ? (TFT_WIDTH - msg_w) / 2 : 4);
-        display_draw_string(mx, EXPORT_STATUS_Y, msg, is_success ? TFT_GREEN : TFT_ORANGE,
-                            TFT_BLACK, 1);
+        uint16_t color = (kind == EXPORT_MSG_SUCCESS)  ? TFT_GREEN
+                        : (kind == EXPORT_MSG_FALLBACK) ? TFT_YELLOW
+                                                        : TFT_ORANGE;
+        display_draw_string(mx, EXPORT_STATUS_Y, msg, color, TFT_BLACK, 1);
     }
 
     ui_grid_render(&ctx->grid);

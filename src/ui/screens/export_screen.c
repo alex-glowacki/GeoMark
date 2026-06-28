@@ -14,6 +14,7 @@
 #include <string.h>
 
 #include "collector/measure_points_export.h"
+#include "collector/usb_export.h"
 #include "ui/tft/display.h" /* TFT_WIDTH only */
 #include "util/log.h"
 
@@ -85,6 +86,45 @@ static void resolve_origin(const MeasurePointStore *points, double *origin_lat,
 }
 
 /* -------------------------------------------------------------------------
+ * Destination resolution -- USB drive when actually mounted, internal
+ * job_dir/export/ otherwise. One shared resolver rather than a
+ * per-format function: usb_export_path_for_job() already computes both
+ * the LandXML and CSV destination paths together in a single call (one
+ * mkdir sequence for both), so resolving both up front and letting each
+ * button callback pick the one it needs is simpler than two near-
+ * duplicate functions each independently calling usb_export_path_for_job()
+ * and discarding half of what it returns.
+ *
+ * Checked fresh on every call (not cached anywhere in ExportScreenCtx)
+ * -- see export_screen.h's file-level doc comment for why this must
+ * reflect the drive's state at the moment of the actual button press,
+ * not whenever this screen was last entered.
+ *
+ * Returns true if the USB drive was used (out_xml_path/out_csv_path are
+ * both on the USB drive), false if this fell back to internal storage
+ * -- either because the drive was not mounted, or because
+ * usb_export_path_for_job() itself failed for any other reason (e.g.
+ * an unexpectedly-shaped job_dir). Either way the crew still gets
+ * their export, just not on the drive, and the caller is responsible
+ * for reporting that as a FALLBACK status rather than a silent
+ * success.
+ * ---------------------------------------------------------------------- */
+
+static bool resolve_export_destination(const JobContext *job_ctx, char *out_xml_path,
+                                       size_t xml_path_len, char *out_csv_path,
+                                       size_t csv_path_len)
+{
+    if (usb_export_is_mounted() &&
+        usb_export_path_for_job(job_ctx->job_dir, out_xml_path, xml_path_len, out_csv_path,
+                                csv_path_len) == GM_OK)
+        return true;
+
+    measure_points_export_landxml_path(job_ctx->job_dir, out_xml_path, xml_path_len);
+    measure_points_export_csv_path(job_ctx->job_dir, out_csv_path, csv_path_len);
+    return false;
+}
+
+/* -------------------------------------------------------------------------
  * Export button callbacks
  * ---------------------------------------------------------------------- */
 
@@ -101,16 +141,29 @@ static void on_export_landxml(UiWidget *self, void *screen_ctx)
     double origin_lat, origin_lon;
     resolve_origin(&ctx->points, &origin_lat, &origin_lon);
 
-    char path[768];
-    measure_points_export_landxml_path(ctx->job_ctx->job_dir, path, sizeof(path));
-    gm_status_t rc =
-        measure_points_export_landxml(path, &ctx->points, &ctx->job_meta, origin_lat, origin_lon);
+    char xml_path[USB_EXPORT_PATH_MAX];
+    char csv_path[USB_EXPORT_PATH_MAX]; /* unused by this callback, but
+                                         * resolve_export_destination()
+                                         * always resolves both together --
+                                         * see that function's own doc
+                                         * comment for why */
+    bool used_usb =
+        resolve_export_destination(ctx->job_ctx, xml_path, sizeof(xml_path), csv_path,
+                                   sizeof(csv_path));
 
-    ctx->status = (rc == GM_OK) ? EXPORT_SCREEN_STATUS_LANDXML_OK
-                                 : EXPORT_SCREEN_STATUS_LANDXML_ERROR;
-    if (rc == GM_OK)
-        log_info("export_screen: wrote LandXML for job '%s' (%u points)", ctx->job_ctx->name,
-                 ctx->points.count);
+    gm_status_t rc = measure_points_export_landxml(xml_path, &ctx->points, &ctx->job_meta,
+                                                   origin_lat, origin_lon);
+
+    if (rc != GM_OK) {
+        ctx->status = EXPORT_SCREEN_STATUS_LANDXML_ERROR;
+        return;
+    }
+
+    ctx->status = used_usb ? EXPORT_SCREEN_STATUS_LANDXML_OK
+                           : EXPORT_SCREEN_STATUS_LANDXML_OK_FALLBACK;
+    log_info("export_screen: wrote LandXML for job '%s' (%u points) to %s (%s)",
+             ctx->job_ctx->name, ctx->points.count, xml_path,
+             used_usb ? "USB" : "internal storage");
 }
 
 static void on_export_csv(UiWidget *self, void *screen_ctx)
@@ -126,15 +179,25 @@ static void on_export_csv(UiWidget *self, void *screen_ctx)
     double origin_lat, origin_lon;
     resolve_origin(&ctx->points, &origin_lat, &origin_lon);
 
-    char path[768];
-    measure_points_export_csv_path(ctx->job_ctx->job_dir, path, sizeof(path));
-    gm_status_t rc =
-        measure_points_export_csv(path, &ctx->points, &ctx->job_meta, origin_lat, origin_lon);
+    char xml_path[USB_EXPORT_PATH_MAX]; /* unused by this callback, see
+                                         * on_export_landxml()'s identical
+                                         * comment above */
+    char csv_path[USB_EXPORT_PATH_MAX];
+    bool used_usb =
+        resolve_export_destination(ctx->job_ctx, xml_path, sizeof(xml_path), csv_path,
+                                   sizeof(csv_path));
 
-    ctx->status = (rc == GM_OK) ? EXPORT_SCREEN_STATUS_CSV_OK : EXPORT_SCREEN_STATUS_CSV_ERROR;
-    if (rc == GM_OK)
-        log_info("export_screen: wrote CSV for job '%s' (%u points)", ctx->job_ctx->name,
-                 ctx->points.count);
+    gm_status_t rc = measure_points_export_csv(csv_path, &ctx->points, &ctx->job_meta, origin_lat,
+                                               origin_lon);
+
+    if (rc != GM_OK) {
+        ctx->status = EXPORT_SCREEN_STATUS_CSV_ERROR;
+        return;
+    }
+
+    ctx->status = used_usb ? EXPORT_SCREEN_STATUS_CSV_OK : EXPORT_SCREEN_STATUS_CSV_OK_FALLBACK;
+    log_info("export_screen: wrote CSV for job '%s' (%u points) to %s (%s)", ctx->job_ctx->name,
+             ctx->points.count, csv_path, used_usb ? "USB" : "internal storage");
 }
 
 /** See ui/core/widget.h's ui_grid_add_back_button() doc comment. */

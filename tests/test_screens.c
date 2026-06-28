@@ -1618,6 +1618,173 @@ static void test_measure_points_no_fix_blocks_capture(void)
 }
 
 /* -------------------------------------------------------------------------
+ * Export screen: USB-not-mounted fallback path.
+ *
+ * This sandbox/CI environment never has USB_EXPORT_MOUNT_POINT
+ * ("/mnt/usb") actually mounted (usb_export_is_mounted() reads the
+ * real /proc/mounts -- see tests/test_usb_export.c's own file-level
+ * doc comment for why that function has no automated suite of its
+ * own), so every Export button press in a test run deterministically
+ * takes the FALLBACK branch -- export_screen.c's resolve_export_
+ * destination() falls back to the internal job_dir/export/ path
+ * whenever usb_export_is_mounted() reports false, which is always true
+ * here. This is exactly the branch most likely to regress silently
+ * (a typo turning "fell back" into "succeeded on USB" would still
+ * write a correct file, just report the wrong status to the field
+ * crew), so it gets real coverage; the USB-mounted success branch's
+ * own path-construction logic is already fully covered directly by
+ * test_usb_export.c's test_path_for_job_creates_directories() and
+ * friends, against usb_export_path_for_job_under() rather than through
+ * this screen.
+ * ---------------------------------------------------------------------- */
+
+static void test_export_landxml_falls_back_when_usb_not_mounted(void)
+{
+    UiScreenStack stack;
+    ui_stack_init(&stack);
+
+    char tmpl[] = "/tmp/geomark_test_home_XXXXXX";
+    char *tmp_home = mkdtemp(tmpl);
+    ASSERT(tmp_home != NULL, "mkdtemp created a disposable HOME for this test");
+
+    JobContext job_ctx;
+    job_context_set(&job_ctx, tmp_home, "TESTPROJ_EXPORT1", "TESTJOB_EXPORT1");
+
+    /* job_ctx.job_dir must actually exist on disk before exporting --
+     * in real use JobContext is only ever set AFTER Job Create/Open
+     * Existing Job has already created/confirmed this directory (see
+     * job_context.h's own doc comment), so this test recreates that
+     * same precondition explicitly rather than relying on
+     * job_context_set() itself to have done it (it only builds the
+     * path string, see job_context.c). Same inline mkdir() convention
+     * make_n_job_dirs() (above, in this same file) already uses for an
+     * identical multi-level directory creation. */
+    char data_dir[640];
+    snprintf(data_dir, sizeof(data_dir), "%s/geomark-data", tmp_home);
+    char projects_dir[660];
+    snprintf(projects_dir, sizeof(projects_dir), "%s/projects", data_dir);
+    char project_dir[700];
+    snprintf(project_dir, sizeof(project_dir), "%s/TESTPROJ_EXPORT1", projects_dir);
+    mkdir(data_dir, 0755);
+    mkdir(projects_dir, 0755);
+    mkdir(project_dir, 0755);
+    mkdir(job_ctx.job_dir, 0755);
+
+    ExportScreenCtx ctx;
+    export_screen_init(&ctx, &stack, &job_ctx);
+    ui_stack_push(&stack, export_screen_as_ui_screen(&ctx));
+
+    UiWidget *landxml_btn = find_widget(&ctx.grid, WIDGET_BUTTON, "Export LandXML");
+    ASSERT(landxml_btn != NULL, "Export LandXML button exists on the Export screen");
+    if (landxml_btn)
+        activate_widget_directly(&ctx.grid, landxml_btn);
+
+    ASSERT(ctx.status == EXPORT_SCREEN_STATUS_LANDXML_OK_FALLBACK,
+          "With no USB drive mounted, LandXML export reports the FALLBACK status, "
+          "not plain OK");
+
+    char expected_path[768];
+    snprintf(expected_path, sizeof(expected_path), "%s/export/points.xml", job_ctx.job_dir);
+    struct stat st;
+    ASSERT(stat(expected_path, &st) == 0 && S_ISREG(st.st_mode),
+          "The LandXML file was actually written to internal storage, not silently dropped");
+
+    unlink(expected_path);
+    char export_dir[768];
+    snprintf(export_dir, sizeof(export_dir), "%s/export", job_ctx.job_dir);
+    rmdir(export_dir);
+    rmdir(job_ctx.job_dir);
+    rmdir(project_dir);
+    rmdir(projects_dir);
+    rmdir(data_dir);
+    rmdir(tmp_home);
+}
+
+static void test_export_csv_falls_back_when_usb_not_mounted(void)
+{
+    UiScreenStack stack;
+    ui_stack_init(&stack);
+
+    char tmpl[] = "/tmp/geomark_test_home_XXXXXX";
+    char *tmp_home = mkdtemp(tmpl);
+    ASSERT(tmp_home != NULL, "mkdtemp created a disposable HOME for this test");
+
+    JobContext job_ctx;
+    job_context_set(&job_ctx, tmp_home, "TESTPROJ_EXPORT2", "TESTJOB_EXPORT2");
+
+    /* See test_export_landxml_falls_back_when_usb_not_mounted()'s
+     * identical comment above for why job_ctx.job_dir must be created
+     * on disk explicitly here. */
+    char data_dir[640];
+    snprintf(data_dir, sizeof(data_dir), "%s/geomark-data", tmp_home);
+    char projects_dir[660];
+    snprintf(projects_dir, sizeof(projects_dir), "%s/projects", data_dir);
+    char project_dir[700];
+    snprintf(project_dir, sizeof(project_dir), "%s/TESTPROJ_EXPORT2", projects_dir);
+    mkdir(data_dir, 0755);
+    mkdir(projects_dir, 0755);
+    mkdir(project_dir, 0755);
+    mkdir(job_ctx.job_dir, 0755);
+
+    ExportScreenCtx ctx;
+    export_screen_init(&ctx, &stack, &job_ctx);
+    ui_stack_push(&stack, export_screen_as_ui_screen(&ctx));
+
+    UiWidget *csv_btn = find_widget(&ctx.grid, WIDGET_BUTTON, "Export CSV");
+    ASSERT(csv_btn != NULL, "Export CSV button exists on the Export screen");
+    if (csv_btn)
+        activate_widget_directly(&ctx.grid, csv_btn);
+
+    ASSERT(ctx.status == EXPORT_SCREEN_STATUS_CSV_OK_FALLBACK,
+          "With no USB drive mounted, CSV export reports the FALLBACK status, not plain OK");
+
+    char expected_path[768];
+    snprintf(expected_path, sizeof(expected_path), "%s/export/points_export.csv",
+             job_ctx.job_dir);
+    struct stat st;
+    ASSERT(stat(expected_path, &st) == 0 && S_ISREG(st.st_mode),
+          "The CSV file was actually written to internal storage, not silently dropped");
+
+    unlink(expected_path);
+    char export_dir[768];
+    snprintf(export_dir, sizeof(export_dir), "%s/export", job_ctx.job_dir);
+    rmdir(export_dir);
+    rmdir(job_ctx.job_dir);
+    rmdir(project_dir);
+    rmdir(projects_dir);
+    rmdir(data_dir);
+    rmdir(tmp_home);
+}
+
+/**
+ * No active job: both Export buttons must report NO_JOB rather than
+ * attempting to resolve a USB or internal destination at all -- same
+ * "check job_context_has_job() before touching any path" guard
+ * on_export_landxml()/on_export_csv() already each have.
+ */
+static void test_export_no_job_blocks_export(void)
+{
+    UiScreenStack stack;
+    ui_stack_init(&stack);
+
+    JobContext job_ctx;
+    job_context_init(&job_ctx); /* no job set */
+
+    ExportScreenCtx ctx;
+    export_screen_init(&ctx, &stack, &job_ctx);
+    ui_stack_push(&stack, export_screen_as_ui_screen(&ctx));
+
+    UiWidget *landxml_btn = find_widget(&ctx.grid, WIDGET_BUTTON, "Export LandXML");
+    ASSERT(landxml_btn != NULL, "Export LandXML button exists even with no active job");
+    if (landxml_btn)
+        activate_widget_directly(&ctx.grid, landxml_btn);
+
+    ASSERT(ctx.status == EXPORT_SCREEN_STATUS_NO_JOB,
+          "Pressing Export LandXML with no active job reports NO_JOB, "
+          "not an attempted (and meaningless) export");
+}
+
+/* -------------------------------------------------------------------------
  * Full flow: New Project -> Job Setup -> Create New Job (which sets
  * JobContext) -> Measure Points -> inject a fake valid fix via
  * TestFeedState -> Capture Point -> confirm the point lands in the
@@ -2261,6 +2428,9 @@ int main(void)
     test_measure_points_readout_layout_fits();
     test_measure_points_no_job_status();
     test_measure_points_no_fix_blocks_capture();
+    test_export_landxml_falls_back_when_usb_not_mounted();
+    test_export_csv_falls_back_when_usb_not_mounted();
+    test_export_no_job_blocks_export();
     test_measure_points_capture_and_persist_end_to_end();
     test_measure_points_typed_fields_and_height_correction();
     test_measure_points_keyboard_toggle_button();

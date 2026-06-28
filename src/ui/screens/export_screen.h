@@ -34,15 +34,24 @@
  * captured and saved, not a stale in-memory copy from whenever this
  * screen was first constructed.
  *
- * Export destination: fixed paths under the job directory
+ * Export destination: the mounted USB export drive
+ * (collector/usb_export.h's USB_EXPORT_MOUNT_POINT, mirroring this
+ * job's <project>/<job> structure under it) when actually mounted,
+ * falling back to the fixed internal path under the job directory
  * (job_dir/export/points.xml, job_dir/export/points_export.csv -- see
- * collector/measure_points_export.h), never a user-typed filename.
- * Keeping this screen keyboard-free means there is exactly one
- * sensible export per job per format (re-exporting after capturing
- * more points simply overwrites the previous file, matching
- * points.csv's own "this job has exactly one of these" precedent) and
- * avoids opening the keyboard overlay for a task that is about
- * getting data OFF the device, not naming it.
+ * collector/measure_points_export.h) when it is not. Checked fresh on
+ * every Export button press (usb_export_is_mounted(), not cached at
+ * on_enter) -- a field crew plugging the drive in or pulling it out
+ * mid-session, between presses, should be honored immediately rather
+ * than reflecting whatever was true when this screen was last entered.
+ * Never a user-typed filename in either case: re-exporting after
+ * capturing more points simply overwrites the previous file at
+ * whichever destination was actually used, matching points.csv's own
+ * "this job has exactly one of these" precedent. The crew is told
+ * which destination was actually used via a distinct fallback status
+ * message (EXPORT_SCREEN_STATUS_*_OK_FALLBACK below) -- a silent
+ * fallback would risk a crew believing their data is on the USB drive
+ * when it is not.
  */
 
 #ifndef GEOMARK_UI_SCREENS_EXPORT_SCREEN_H
@@ -56,12 +65,19 @@
 
 typedef enum {
     EXPORT_SCREEN_STATUS_NONE = 0,
-    EXPORT_SCREEN_STATUS_NO_JOB,        /* JobContext has no job set */
-    EXPORT_SCREEN_STATUS_LOAD_ERROR,    /* points.csv exists but failed to parse */
-    EXPORT_SCREEN_STATUS_LANDXML_OK,    /* LandXML export just succeeded */
-    EXPORT_SCREEN_STATUS_LANDXML_ERROR, /* LandXML export just failed (I/O) */
-    EXPORT_SCREEN_STATUS_CSV_OK,        /* CSV export just succeeded */
-    EXPORT_SCREEN_STATUS_CSV_ERROR,     /* CSV export just failed (I/O) */
+    EXPORT_SCREEN_STATUS_NO_JOB,              /* JobContext has no job set */
+    EXPORT_SCREEN_STATUS_LOAD_ERROR,          /* points.csv exists but failed to parse */
+    EXPORT_SCREEN_STATUS_LANDXML_OK,          /* LandXML written to the USB drive */
+    EXPORT_SCREEN_STATUS_LANDXML_OK_FALLBACK, /* LandXML written to internal storage --
+                                               * USB drive was not mounted, see
+                                               * collector/usb_export.h */
+    EXPORT_SCREEN_STATUS_LANDXML_ERROR,       /* LandXML export failed (I/O), neither
+                                               * destination */
+    EXPORT_SCREEN_STATUS_CSV_OK,              /* CSV written to the USB drive */
+    EXPORT_SCREEN_STATUS_CSV_OK_FALLBACK,     /* CSV written to internal storage --
+                                               * USB drive was not mounted */
+    EXPORT_SCREEN_STATUS_CSV_ERROR,           /* CSV export failed (I/O), neither
+                                               * destination */
 } ExportScreenStatus;
 
 typedef struct {
