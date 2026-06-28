@@ -1,4 +1,6 @@
+#include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "../src/ui/core/keyboard.h"
@@ -75,7 +77,7 @@ static void test_char_keys_append(void)
     UiKeyboardLabels labels;
 
     fake_screen_init(&ctx, buf, sizeof(buf), &len, &grid, &labels);
-    ASSERT(keyboard_add_to_grid(&grid, &labels), "All 41 keys fit in the grid");
+    ASSERT(keyboard_add_to_grid(&grid, &labels), "All 42 keys fit in the grid");
 
     /* Find the 'A' key by its label and activate it directly -- exercises
      * exactly the path ui_grid_handle_event() would take for a tap or a
@@ -250,7 +252,7 @@ static void test_done_and_own_widget_share_grid(void)
 }
 
 /* =========================================================================
- * Grid capacity: all 41 keys plus a few of the screen's own widgets must
+ * Grid capacity: all 42 keys plus a few of the screen's own widgets must
  * fit under UI_GRID_MAX_WIDGETS (50) -- this is what motivated raising
  * the cap from 24.
  * ========================================================================= */
@@ -271,8 +273,113 @@ static void test_full_layout_fits_with_headroom(void)
     ui_grid_add_text_field(&grid, r2, "Project Name", buf, sizeof(buf));
 
     ASSERT(keyboard_add_to_grid(&grid, &labels),
-          "Label + text field + 41 keyboard keys (43 widgets) fit under the 50 cap");
-    ASSERT(grid.count == 43, "Grid holds exactly label + field + 41 keys");
+          "Label + text field + 42 keyboard keys (44 widgets) fit under the 50 cap");
+    ASSERT(grid.count == 44, "Grid holds exactly label + field + 42 keys");
+}
+
+/* =========================================================================
+ * Decimal key: '.' exists, appends correctly, and combines with digit
+ * keys (and the existing '-' key) to produce a real parseable decimal
+ * string -- the actual fix for "can't enter a non-whole-number height"
+ * on Measure Points' Target height field. atof() is the same parser
+ * measure_points_screen.c's on_capture_point() uses on this buffer, so
+ * this test proves the typed string is exactly what that call site
+ * expects, not just that the buffer "looks right".
+ * ========================================================================= */
+
+static void test_decimal_key_produces_parseable_float(void)
+{
+    char   buf[16] = {0};
+    size_t len     = 0;
+    FakeScreenCtx ctx;
+    UiWidgetGrid grid;
+    UiKeyboardLabels labels;
+
+    fake_screen_init(&ctx, buf, sizeof(buf), &len, &grid, &labels);
+    ASSERT(keyboard_add_to_grid(&grid, &labels), "All 42 keys fit in the grid");
+
+    UiWidget *dot = NULL;
+    for (uint32_t i = 0; i < grid.count; i++) {
+        if (grid.widgets[i].label && strcmp(grid.widgets[i].label, ".") == 0) {
+            dot = &grid.widgets[i];
+            break;
+        }
+    }
+    ASSERT(dot != NULL, "A '.' key exists in the grid");
+
+    /* Type "-6.5" via the existing '-' key, two digit keys, the new '.'
+     * key, and one more digit key -- exercises the negative sign, the
+     * decimal point, and ordinary digits all sharing one buffer. */
+    const char *typed = "-6.5";
+    UiEvent activate = { .type = UI_EVENT_ACTIVATE };
+    for (const char *p = typed; *p; p++) {
+        UiWidget *key = NULL;
+        char want[2] = { *p, '\0' };
+        for (uint32_t i = 0; i < grid.count; i++) {
+            if (grid.widgets[i].label && strcmp(grid.widgets[i].label, want) == 0) {
+                key = &grid.widgets[i];
+                break;
+            }
+        }
+        ASSERT(key != NULL, "Each character of \"-6.5\" has a matching key");
+        if (key) {
+            grid.focus_idx = (int32_t)(key - grid.widgets);
+            ui_grid_handle_event(&grid, activate);
+        }
+    }
+
+    ASSERT(strcmp(buf, "-6.5") == 0,
+          "Typing '-', '6', '.', '5' through the keyboard produces \"-6.5\"");
+    ASSERT(fabs(atof(buf) - (-6.5)) < 1e-9,
+          "The typed string parses via atof() to exactly -6.5, "
+          "matching on_capture_point()'s own parsing convention");
+}
+
+/* =========================================================================
+ * Every keyboard key must be nav_excluded -- this is the actual
+ * mechanism fix for the Up/Down-alternates-into-the-keyboard bug. A
+ * char key, the '.' key specifically, and all three action keys
+ * (Space/Del/Done) are checked individually rather than just scanning
+ * for "any key with nav_excluded == false", so a future regression that
+ * only affects one row or the action row specifically still fails this
+ * test with a clear, attributable assertion message.
+ * ========================================================================= */
+
+static void test_every_key_is_nav_excluded(void)
+{
+    char   buf[16] = {0};
+    size_t len     = 0;
+    FakeScreenCtx ctx;
+    UiWidgetGrid grid;
+    UiKeyboardLabels labels;
+
+    fake_screen_init(&ctx, buf, sizeof(buf), &len, &grid, &labels);
+    ASSERT(keyboard_add_to_grid(&grid, &labels), "All 42 keys fit in the grid");
+
+    const char *spot_check[] = { "A", "1", ".", "-", "_", "Space", "Del", "Done" };
+    for (size_t i = 0; i < sizeof(spot_check) / sizeof(spot_check[0]); i++) {
+        UiWidget *key = NULL;
+        for (uint32_t j = 0; j < grid.count; j++) {
+            if (grid.widgets[j].label && strcmp(grid.widgets[j].label, spot_check[i]) == 0) {
+                key = &grid.widgets[j];
+                break;
+            }
+        }
+        ASSERT(key != NULL, "Spot-checked key exists in the grid");
+        if (key)
+            ASSERT(key->nav_excluded,
+                  "Spot-checked key is marked nav_excluded (Up/Down must never land on it)");
+    }
+
+    /* Exhaustive check too -- every single one of the 42 widgets this
+     * module adds, not just the spot-checked subset above, must be
+     * nav_excluded. The spot checks above give an attributable failure
+     * message per key kind; this confirms there is no key anywhere in
+     * the layout that was missed. */
+    for (uint32_t i = 0; i < grid.count; i++) {
+        ASSERT(grid.widgets[i].nav_excluded,
+              "Every widget keyboard_add_to_grid() adds is nav_excluded, with no exception");
+    }
 }
 
 /* =========================================================================
@@ -286,6 +393,8 @@ int main(void)
     test_buffer_full_guard();
     test_done_and_own_widget_share_grid();
     test_full_layout_fits_with_headroom();
+    test_decimal_key_produces_parseable_float();
+    test_every_key_is_nav_excluded();
 
     if (g_tests_failed == 0) {
         printf("All %d keyboard tests passed.\n", g_tests_run);
