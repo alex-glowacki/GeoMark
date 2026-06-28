@@ -95,6 +95,39 @@ typedef struct UiWidget {
     bool scrollable;
 
     /**
+     * True if this widget must never be reached by ui_grid_move_focus()
+     * (the Up/Down/Left/Right nav-button path), even though it remains
+     * perfectly focusable for direct tap/ACTIVATE. Set via
+     * ui_widget_mark_nav_excluded() after adding the widget -- default
+     * false (grid_alloc()'s zero-init), so every existing caller of
+     * ui_grid_move_focus() is unaffected until something opts a widget
+     * out.
+     *
+     * Why this exists: ui_core/keyboard.h's on-screen keyboard shares one
+     * grid with a screen's own form widgets (see that header's file-level
+     * doc comment), and ui_grid_move_focus() scores every focusable
+     * widget in the grid purely by geometric distance with no concept of
+     * "these widgets are a different control surface." On any screen
+     * that combines an embedded/overlay keyboard with Up/Down nav buttons
+     * (e.g. Job Create's always-visible keyboard, or Measure Points' own
+     * keyboard overlay once nav buttons are added there), the nearest
+     * geometric candidate above/below the last form field is very often
+     * a keyboard key, not the next form field -- Up/Down then visibly
+     * alternates between "the field I wanted" and "a random keyboard
+     * key" as focus walks down the form, since the keyboard sits
+     * directly below it. Marking every keyboard key nav_excluded removes
+     * them from ui_grid_move_focus()'s candidate set entirely, while
+     * leaving them tappable exactly as before (tap goes through
+     * ui_grid_hit_test() + activate_widget(), neither of which consults
+     * this flag) -- nav buttons then only ever land on the screen's own
+     * fields/buttons, never a key. keyboard_add_to_grid() sets this on
+     * all 42 keys it adds; no screen needs to call this itself for that
+     * reason, only for any other widget it wants excluded from Up/Down
+     * for the same kind of reason.
+     */
+    bool nav_excluded;
+
+    /**
      * Fired on UI_EVENT_ACTIVATE (Center / resolved tap), after any
      * kind-specific default behavior in ui_grid_handle_event() has already
      * been applied (numeric step, dropdown cycle, text-field edit toggle).
@@ -305,6 +338,18 @@ UiRect ui_widget_effective_rect(const UiWidget *w, const UiWidgetGrid *grid);
 void ui_widget_mark_scrollable(UiWidget *w);
 
 /**
+ * Mark an already-added widget so ui_grid_move_focus() (Up/Down/Left/
+ * Right nav buttons) will never land on it -- see UiWidget::nav_excluded's
+ * doc comment for the keyboard-key-vs-nav-button conflict this solves.
+ * The widget remains fully focusable for direct tap/ACTIVATE; only the
+ * geometric Up/Down/Left/Right search in ui_grid_move_focus() skips it.
+ * Safe to call with NULL (e.g. if the matching ui_grid_add_*() call
+ * failed because the grid was full) -- a no-op in that case, same
+ * null-tolerance ui_widget_mark_scrollable() already has.
+ */
+void ui_widget_mark_nav_excluded(UiWidget *w);
+
+/**
  * Define the grid's scrollable viewport in screen pixels. Only widgets
  * marked scrollable (see ui_widget_mark_scrollable()) are affected by
  * scroll_y or clipped against this region; everything else (fixed
@@ -329,6 +374,12 @@ bool ui_grid_focus_first(UiWidgetGrid *grid);
  * Returns false if there is no focusable widget that way (an edge) — the
  * caller (the owning screen) decides what an edge means, e.g. translating
  * a NAV_LEFT-at-edge into a UI_EVENT_BACK dispatched to the screen stack.
+ *
+ * Widgets with nav_excluded == true (see that field's doc comment) are
+ * never considered as a destination, regardless of geometric distance --
+ * this is what keeps Up/Down nav buttons from ever landing on an
+ * on-screen keyboard key that happens to sit closest to the currently
+ * focused field.
  *
  * Scoring uses each widget's literal (unscrolled) rect, so focus order
  * never changes just because the view has scrolled -- only which widgets

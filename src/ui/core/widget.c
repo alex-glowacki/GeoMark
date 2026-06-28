@@ -132,6 +132,12 @@ void ui_widget_mark_scrollable(UiWidget *w)
     w->scrollable = true;
 }
 
+void ui_widget_mark_nav_excluded(UiWidget *w)
+{
+    if (!w) return;
+    w->nav_excluded = true;
+}
+
 static bool scroll_region_active(const UiWidgetGrid *grid)
 {
     return grid->scroll_region.w > 0 && grid->scroll_region.h > 0;
@@ -194,6 +200,7 @@ bool ui_grid_move_focus(UiWidgetGrid *grid, UiEventType dir)
         if ((int32_t)i == grid->focus_idx) continue;
         const UiWidget *cand = &grid->widgets[i];
         if (!cand->focusable) continue;
+        if (cand->nav_excluded) continue;
 
         int32_t dx = rect_center_x(&cand->rect) - cx;
         int32_t dy = rect_center_y(&cand->rect) - cy;

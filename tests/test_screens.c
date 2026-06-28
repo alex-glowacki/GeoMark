@@ -629,6 +629,111 @@ static void test_job_setup_and_create_end_to_end(void)
 }
 
 /* =========================================================================
+ * Regression: Job Create's Up/Down nav buttons must never focus a
+ * keyboard key.
+ *
+ * Job Create is the one screen in this codebase that combines an
+ * always-visible embedded keyboard (ui/core/keyboard.h) with Up/Down nav
+ * buttons (ui/core/widget.h) in the same grid. Before nav_excluded
+ * existed (see widget.h's doc comment on that field), ui_grid_move_focus()
+ * scored every focusable widget in the grid purely by geometric distance
+ * -- with the keyboard sitting directly below the scrollable form, the
+ * nearest candidate above/below the last form field (Notes) was very
+ * often a keyboard key, not the next real field/button, so repeatedly
+ * pressing Down visibly alternated between "a form field" and "some
+ * keyboard key" instead of ever reaching the Create Job button.
+ *
+ * This test focuses Notes (the last scrollable form field, directly
+ * above the keyboard) and presses Down via ui_stack_dispatch_event() --
+ * the real on_event() -> on_nav_down() path, not a direct grid call --
+ * enough times to walk past where Create Job sits, asserting after
+ * EVERY press that focus never lands on anything with nav_excluded set.
+ * A single end-of-test check would only prove the FINAL focus is a
+ * non-keyboard widget; checking every intermediate press is what
+ * actually catches "briefly alternates through a key" rather than just
+ * "ends up somewhere other than a key".
+ * ========================================================================= */
+
+static void test_job_create_nav_down_never_focuses_keyboard_key(void)
+{
+    char tmpl[] = "/tmp/geomark_test_home_XXXXXX";
+    char *tmp_home = mkdtemp(tmpl);
+    ASSERT(tmp_home != NULL, "mkdtemp created a disposable HOME for this test");
+
+    const char *real_home = getenv("HOME");
+    char real_home_buf[512] = {0};
+    if (real_home) strncpy(real_home_buf, real_home, sizeof(real_home_buf) - 1);
+    setenv("HOME", tmp_home, 1);
+
+    UiScreenStack stack;
+    ui_stack_init(&stack);
+
+    ProjectContext project_ctx;
+    project_context_init(&project_ctx);
+    project_context_set(&project_ctx, "NAVTESTPROJ");
+
+    JobContext job_ctx;
+    job_context_init(&job_ctx);
+
+    PlaceholderScreenCtx measure_points_stub;
+    placeholder_screen_init(&measure_points_stub, &stack, "Measure Points -- not built yet");
+
+    JobCreateScreenCtx ctx;
+    job_create_screen_init(&ctx, &stack,
+                           placeholder_screen_as_ui_screen(&measure_points_stub),
+                           &project_ctx, &job_ctx);
+    ui_stack_push(&stack, job_create_screen_as_ui_screen(&ctx));
+
+    UiWidget *notes_field = find_widget(&ctx.grid, WIDGET_TEXT_FIELD, "Notes");
+    ASSERT(notes_field != NULL, "Notes text field exists on Job Create");
+    if (notes_field)
+        activate_widget_directly(&ctx.grid, notes_field);
+    ASSERT(ctx.active_field == JOB_CREATE_FIELD_NOTES,
+          "Activating Notes retargets the keyboard at it, same as any other field");
+
+    UiEvent nav_down = { .type = UI_EVENT_NAV_DOWN };
+
+    /* Notes -> Create Job -> Back -> Up -> Down (the rest of the grid
+     * past Notes, in whatever order ui_grid_move_focus() finds them) --
+     * 6 presses is comfortably more than enough to walk clear past every
+     * non-keyboard widget added after Notes, so if nav_excluded were not
+     * working this loop is guaranteed to land on a key well before it
+     * ends. */
+    for (int i = 1; i <= 6; i++) {
+        ui_stack_dispatch_event(&stack, nav_down);
+        ASSERT(ctx.grid.focus_idx >= 0 && ctx.grid.focus_idx < (int32_t)ctx.grid.count,
+              "Focus index stays in bounds after each Down press");
+        if (ctx.grid.focus_idx >= 0 && ctx.grid.focus_idx < (int32_t)ctx.grid.count) {
+            const UiWidget *focused = &ctx.grid.widgets[ctx.grid.focus_idx];
+            ASSERT(!focused->nav_excluded,
+                  "Down never focuses a nav_excluded widget (i.e. never a keyboard key)");
+        }
+    }
+
+    /* Same check pressing Up from wherever the loop above landed --
+     * Up/Down share the identical candidate-scoring code path in
+     * ui_grid_move_focus(), but exercising both directions explicitly
+     * keeps this test from silently relying on Down's coverage alone. */
+    UiEvent nav_up = { .type = UI_EVENT_NAV_UP };
+    for (int i = 1; i <= 6; i++) {
+        ui_stack_dispatch_event(&stack, nav_up);
+        ASSERT(ctx.grid.focus_idx >= 0 && ctx.grid.focus_idx < (int32_t)ctx.grid.count,
+              "Focus index stays in bounds after each Up press");
+        if (ctx.grid.focus_idx >= 0 && ctx.grid.focus_idx < (int32_t)ctx.grid.count) {
+            const UiWidget *focused = &ctx.grid.widgets[ctx.grid.focus_idx];
+            ASSERT(!focused->nav_excluded,
+                  "Up never focuses a nav_excluded widget (i.e. never a keyboard key)");
+        }
+    }
+
+    if (real_home_buf[0])
+        setenv("HOME", real_home_buf, 1);
+    else
+        unsetenv("HOME");
+    rmdir(tmp_home);
+}
+
+/* =========================================================================
  * End-to-end: Open Existing Job. Builds on the same flow as
  * test_job_setup_and_create_end_to_end (Sleep -> Main Menu -> New Project
  * -> Job Setup -> Create New Job) to get one real job.ini onto disk under
@@ -1393,6 +1498,30 @@ static void test_continue_project_status_cases(void)
 }
 
 /* =========================================================================
+ * Layout sanity: the new 6-row live-fix readout (Lat/Lon DMS, corrected
+ * elevation, HDOP/sats, HRMS/VRMS placeholder, points captured -- see
+ * measure_points_screen_draw.c's draw_status_column()) must fit between
+ * MP_READOUT_Y and MP_EXPORT_Y without overlapping the Export button,
+ * and the Export button itself must stay within PANEL_BOTTOM_Y. This is
+ * a pure constant-arithmetic check (no widget/grid/rendering involved)
+ * -- the same kind of "the row math actually adds up" regression
+ * keyboard.c's own KEYBOARD_HEIGHT budget comment guards against,
+ * applied here since this session widened the readout from 3 rows to 6
+ * and moved MP_EXPORT_Y down to make room.
+ * ========================================================================= */
+
+static void test_measure_points_readout_layout_fits(void)
+{
+    int readout_bottom = MP_READOUT_Y + MP_READOUT_ROWS * MP_READOUT_ROW_H;
+    ASSERT(readout_bottom <= MP_EXPORT_Y,
+          "The 6-row readout's bottom edge does not overlap the Export button's top edge");
+
+    int export_bottom = MP_EXPORT_Y + MP_EXPORT_H;
+    ASSERT(export_bottom <= PANEL_BOTTOM_Y,
+          "The Export button's bottom edge stays within PANEL_BOTTOM_Y");
+}
+
+/* =========================================================================
  * Measure Points
  *
  * test_feed_fn()/TestFeedState below are this file's own RtkFeedFn
@@ -1835,19 +1964,19 @@ static void test_measure_points_typed_fields_and_height_correction(void)
     ASSERT(height_field != NULL, "Target height text field exists on Measure Points");
     if (height_field)
         activate_widget_directly(&ctx.grid, height_field);
-    /* "65" via two digit keys -- 6.5 ft is not reachable with this
-     * keyboard's digit-only/no-decimal-point key set (see
-     * ui/core/keyboard.h's closed character set), so this test uses a
-     * whole-number height; the atof()/feet<->meters conversion math
-     * itself is exercised regardless of whether the input has a
-     * fractional part. */
-    for (const char *p = "65"; *p; p++) {
+    /* "6.5" via two digit keys and the keyboard's '.' key -- a real
+     * fractional rod height, exercising the decimal-point key added to
+     * ui/core/keyboard.h's char set specifically so non-whole-number
+     * heights (e.g. a 6.5 ft rod) are typeable at all; previously this
+     * test could only use a whole-number height because no '.' key
+     * existed. */
+    for (const char *p = "6.5"; *p; p++) {
         UiWidget *key = find_widget(&ctx.grid, WIDGET_BUTTON, (char[]){ *p, '\0' });
-        ASSERT(key != NULL, "Each digit of the test height has a matching key");
+        ASSERT(key != NULL, "Each character of the test height (incl. '.') has a matching key");
         if (key) activate_widget_directly(&ctx.grid, key);
     }
-    ASSERT(strcmp(ctx.height_buf, "65") == 0,
-          "Typing through the keyboard produced the expected height string");
+    ASSERT(strcmp(ctx.height_buf, "6.5") == 0,
+          "Typing through the keyboard, including the '.' key, produced \"6.5\"");
 
     /* Capture Point still must not be reachable -- the keyboard is
      * still showing (nothing in this test has hidden it yet). */
@@ -1885,14 +2014,14 @@ static void test_measure_points_typed_fields_and_height_correction(void)
     ASSERT(fabs(pt->raw_alt - 250.0) < 1e-6,
           "raw_alt preserves the feed's as-measured altitude");
 
-    /* 65 international feet -> meters via the same GM_M_PER_INTL_FOOT
+    /* 6.5 international feet -> meters via the same GM_M_PER_INTL_FOOT
      * constant units.h itself defines (0.3048 m exactly) -- computed
      * independently here, not by calling gm_intl_ft_to_m(), so this
      * assertion would actually catch a regression in either function,
      * not just confirm they agree with each other. */
-    double expected_height_m = 65.0 * 0.3048;
+    double expected_height_m = 6.5 * 0.3048;
     ASSERT(fabs(pt->target_height_m - expected_height_m) < 1e-6,
-          "target_height_m matches 65 ft converted to meters");
+          "target_height_m matches 6.5 ft converted to meters");
 
     double expected_alt = 250.0 - expected_height_m;
     ASSERT(fabs(pt->alt - expected_alt) < 1e-6,
@@ -2123,11 +2252,13 @@ int main(void)
     test_placeholder_back_button_tap_dispatches_back();
     test_new_project_end_to_end();
     test_job_setup_and_create_end_to_end();
+    test_job_create_nav_down_never_focuses_keyboard_key();
     test_open_job_end_to_end();
     test_open_job_status_cases();
     test_open_job_nav_buttons_only_when_list_overflows();
     test_continue_project_end_to_end();
     test_continue_project_status_cases();
+    test_measure_points_readout_layout_fits();
     test_measure_points_no_job_status();
     test_measure_points_no_fix_blocks_capture();
     test_measure_points_capture_and_persist_end_to_end();
