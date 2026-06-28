@@ -71,6 +71,11 @@ target_include_directories(test_keyboard PRIVATE
     ${PROJECT_SOURCE_DIR}/include
     ${PROJECT_SOURCE_DIR}/src
 )
+# Needs libm explicitly for fabs() -- test_decimal_key_produces_parseable_float()
+# checks the keyboard's typed "-6.5" string against atof()'s parsed value,
+# same convention test_coords.c/test_measure_points_export.c already
+# established for their own libm dependency.
+target_link_libraries(test_keyboard PRIVATE m)
 add_test(NAME test_keyboard COMMAND test_keyboard)
 
 # test_screens: Sleep + Main Menu + New Project + Continue Project +
@@ -174,3 +179,21 @@ target_include_directories(test_job_metadata PRIVATE
     ${PROJECT_SOURCE_DIR}/src
 )
 add_test(NAME test_job_metadata COMMAND test_job_metadata)
+
+# test_units: util/units.h's conversion and DMS/bearing-formatting
+# helpers. Header-only module (every function is `static inline` in the
+# header itself) -- no separate .c source to link, just the test file
+# against the header, same as how every other consumer of units.h
+# already pulls it in (#include only, no units.c exists). Needs libm
+# explicitly for fabs() (used both inside units.h itself and in this
+# test file's own ASSERT comparisons), same convention test_coords.c/
+# test_measure_points_export.c already established.
+add_executable(test_units
+    ${PROJECT_SOURCE_DIR}/tests/test_units.c
+)
+target_include_directories(test_units PRIVATE
+    ${PROJECT_SOURCE_DIR}/include
+    ${PROJECT_SOURCE_DIR}/src
+)
+target_link_libraries(test_units PRIVATE m)
+add_test(NAME test_units COMMAND test_units)
