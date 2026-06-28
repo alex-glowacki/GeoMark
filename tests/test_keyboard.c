@@ -77,7 +77,7 @@ static void test_char_keys_append(void)
     UiKeyboardLabels labels;
 
     fake_screen_init(&ctx, buf, sizeof(buf), &len, &grid, &labels);
-    ASSERT(keyboard_add_to_grid(&grid, &labels), "All 42 keys fit in the grid");
+    ASSERT(keyboard_add_to_grid(&grid, &labels), "All 43 keys fit in the grid");
 
     /* Find the 'A' key by its label and activate it directly -- exercises
      * exactly the path ui_grid_handle_event() would take for a tap or a
@@ -97,6 +97,71 @@ static void test_char_keys_append(void)
 
     ASSERT(len == 1, "One char key press advances len by 1");
     ASSERT(strcmp(buf, "A") == 0, "Buffer contains 'A' after pressing the A key");
+}
+
+/* =========================================================================
+ * '+' key: the new addition this session, for Measure Points' Code field
+ * to type a breakline-start code (e.g. "+24RCPF") -- see
+ * collector/breaklines.h. Same activation path as any other char key
+ * (key_char_activate() has no special-casing per character), so this
+ * test exists primarily to prove the key is actually present and wired
+ * up in the real layout, not to re-test key_char_activate() itself
+ * (test_char_keys_append() above already covers that machinery).
+ * ========================================================================= */
+
+static void test_plus_key_appends(void)
+{
+    char   buf[16] = {0};
+    size_t len     = 0;
+    FakeScreenCtx ctx;
+    UiWidgetGrid grid;
+    UiKeyboardLabels labels;
+
+    fake_screen_init(&ctx, buf, sizeof(buf), &len, &grid, &labels);
+    ASSERT(keyboard_add_to_grid(&grid, &labels), "All 43 keys fit in the grid");
+
+    UiWidget *key_plus = NULL;
+    for (uint32_t i = 0; i < grid.count; i++) {
+        if (grid.widgets[i].label && strcmp(grid.widgets[i].label, "+") == 0) {
+            key_plus = &grid.widgets[i];
+            break;
+        }
+    }
+    ASSERT(key_plus != NULL, "Key '+' exists in the grid");
+
+    UiEvent activate = { .type = UI_EVENT_ACTIVATE };
+    grid.focus_idx = (int32_t)(key_plus - grid.widgets);
+    ui_grid_handle_event(&grid, activate);
+
+    ASSERT(len == 1, "One '+' key press advances len by 1");
+    ASSERT(strcmp(buf, "+") == 0, "Buffer contains '+' after pressing the + key");
+
+    /* '+' followed by ordinary char keys should produce a real
+     * breakline-start code string -- "+24RCPF" is the exact worked
+     * example from the CADD editing standards Alex supplied (see
+     * collector/breaklines.h's file-level doc comment). Re-finds each
+     * key by label rather than reusing key_plus's neighbors, since key
+     * order in the grid is an implementation detail this test
+     * shouldn't depend on. */
+    const char *rest = "24RCPF";
+    for (const char *p = rest; *p; p++) {
+        char label[2] = { *p, '\0' };
+        UiWidget *key = NULL;
+        for (uint32_t i = 0; i < grid.count; i++) {
+            if (grid.widgets[i].label && strcmp(grid.widgets[i].label, label) == 0) {
+                key = &grid.widgets[i];
+                break;
+            }
+        }
+        ASSERT(key != NULL, "Each character of the worked example exists as a key");
+        if (!key) continue;
+        grid.focus_idx = (int32_t)(key - grid.widgets);
+        ui_grid_handle_event(&grid, activate);
+    }
+
+    ASSERT(strcmp(buf, "+24RCPF") == 0,
+          "'+' followed by '24RCPF' produces the exact breakline-start code "
+          "from the CADD editing standards worked example");
 }
 
 /* =========================================================================
@@ -252,7 +317,7 @@ static void test_done_and_own_widget_share_grid(void)
 }
 
 /* =========================================================================
- * Grid capacity: all 42 keys plus a few of the screen's own widgets must
+ * Grid capacity: all 43 keys plus a few of the screen's own widgets must
  * fit under UI_GRID_MAX_WIDGETS (50) -- this is what motivated raising
  * the cap from 24.
  * ========================================================================= */
@@ -273,8 +338,8 @@ static void test_full_layout_fits_with_headroom(void)
     ui_grid_add_text_field(&grid, r2, "Project Name", buf, sizeof(buf));
 
     ASSERT(keyboard_add_to_grid(&grid, &labels),
-          "Label + text field + 42 keyboard keys (44 widgets) fit under the 50 cap");
-    ASSERT(grid.count == 44, "Grid holds exactly label + field + 42 keys");
+          "Label + text field + 43 keyboard keys (45 widgets) fit under the 50 cap");
+    ASSERT(grid.count == 45, "Grid holds exactly label + field + 43 keys");
 }
 
 /* =========================================================================
@@ -296,7 +361,7 @@ static void test_decimal_key_produces_parseable_float(void)
     UiKeyboardLabels labels;
 
     fake_screen_init(&ctx, buf, sizeof(buf), &len, &grid, &labels);
-    ASSERT(keyboard_add_to_grid(&grid, &labels), "All 42 keys fit in the grid");
+    ASSERT(keyboard_add_to_grid(&grid, &labels), "All 43 keys fit in the grid");
 
     UiWidget *dot = NULL;
     for (uint32_t i = 0; i < grid.count; i++) {
@@ -354,9 +419,9 @@ static void test_every_key_is_nav_excluded(void)
     UiKeyboardLabels labels;
 
     fake_screen_init(&ctx, buf, sizeof(buf), &len, &grid, &labels);
-    ASSERT(keyboard_add_to_grid(&grid, &labels), "All 42 keys fit in the grid");
+    ASSERT(keyboard_add_to_grid(&grid, &labels), "All 43 keys fit in the grid");
 
-    const char *spot_check[] = { "A", "1", ".", "-", "_", "Space", "Del", "Done" };
+    const char *spot_check[] = { "A", "1", ".", "-", "_", "+", "Space", "Del", "Done" };
     for (size_t i = 0; i < sizeof(spot_check) / sizeof(spot_check[0]); i++) {
         UiWidget *key = NULL;
         for (uint32_t j = 0; j < grid.count; j++) {
@@ -371,7 +436,7 @@ static void test_every_key_is_nav_excluded(void)
                   "Spot-checked key is marked nav_excluded (Up/Down must never land on it)");
     }
 
-    /* Exhaustive check too -- every single one of the 42 widgets this
+    /* Exhaustive check too -- every single one of the 43 widgets this
      * module adds, not just the spot-checked subset above, must be
      * nav_excluded. The spot checks above give an attributable failure
      * message per key kind; this confirms there is no key anywhere in
@@ -388,6 +453,7 @@ static void test_every_key_is_nav_excluded(void)
 int main(void)
 {
     test_char_keys_append();
+    test_plus_key_appends();
     test_del_removes_last_char();
     test_space_appends_space();
     test_buffer_full_guard();
