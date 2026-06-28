@@ -8,6 +8,7 @@
 #include <unistd.h>
 #include <math.h>
 
+#include "../src/collector/breaklines.h"
 #include "../src/collector/job_metadata.h"
 #include "../src/ui/core/screen_stack.h"
 #include "../src/ui/screens/continue_project_screen.h"
@@ -2202,6 +2203,128 @@ static void test_measure_points_typed_fields_and_height_correction(void)
 }
 
 /* -------------------------------------------------------------------------
+ * Breakline code capture, through the real screen + keyboard: typing
+ * "+RCPF" (using the keyboard's new '+' key, see ui/core/keyboard.h),
+ * then "RCPF", then "-RCPF" across three captures produces three points
+ * whose codes -- once read back through collector/breaklines.h's
+ * breaklines_build(), the same call measure_points_screen_draw.c's map
+ * panel makes every render -- form exactly one closed, 3-vertex line.
+ * This is the screen-layer integration proof that complements
+ * tests/test_breaklines.c's own exhaustive logic-only coverage: it
+ * confirms the '+' key actually reaches MeasurePoint::code through the
+ * real capture path, not just that breaklines_build() behaves correctly
+ * given a hand-built MeasurePointStore.
+ * ---------------------------------------------------------------------- */
+
+/* Types `text` into the Code field of `ctx` via the real keyboard
+ * (clearing whatever was there first with Del), presses Done so Capture
+ * Point becomes reachable, then presses Capture Point -- the same
+ * sequence test_measure_points_typed_fields_and_height_correction()
+ * above already established, factored out as a top-level helper (not a
+ * nested function -- ISO C forbids those, see -Wpedantic) since
+ * test_measure_points_breakline_code_round_trips_through_capture()
+ * below repeats this exact sequence three times, once per code. */
+static void type_code_and_capture(MeasurePointsScreenCtx *ctx, const char *text)
+{
+    UiWidget *code_field = find_widget(&ctx->grid, WIDGET_TEXT_FIELD, "Code");
+    ASSERT(code_field != NULL, "Code text field exists on Measure Points");
+    if (code_field)
+        activate_widget_directly(&ctx->grid, code_field);
+
+    while (ctx->code_len > 0) {
+        UiWidget *del_key = find_widget(&ctx->grid, WIDGET_BUTTON, "Del");
+        ASSERT(del_key != NULL, "Keyboard Del key exists on Measure Points");
+        if (del_key) activate_widget_directly(&ctx->grid, del_key);
+    }
+
+    for (const char *p = text; *p; p++) {
+        UiWidget *key = find_widget(&ctx->grid, WIDGET_BUTTON, (char[]){ *p, '\0' });
+        ASSERT(key != NULL, "Each character of the test code has a matching key "
+                            "(including '+'/'-')");
+        if (key) activate_widget_directly(&ctx->grid, key);
+    }
+    ASSERT(strcmp(ctx->code_buf, text) == 0,
+          "Typing through the keyboard produced the exact expected code string");
+
+    UiWidget *done_key = find_widget(&ctx->grid, WIDGET_BUTTON, "Done");
+    ASSERT(done_key != NULL, "Keyboard Done key exists on Measure Points");
+    if (done_key) activate_widget_directly(&ctx->grid, done_key);
+
+    UiWidget *capture_btn = find_widget(&ctx->grid, WIDGET_BUTTON, "Capture Point");
+    ASSERT(capture_btn != NULL, "Capture Point button exists once the keyboard is hidden");
+    if (capture_btn) activate_widget_directly(&ctx->grid, capture_btn);
+}
+
+static void test_measure_points_breakline_code_round_trips_through_capture(void)
+{
+    char tmpl[] = "/tmp/geomark_test_home_XXXXXX";
+    char *tmp_home = mkdtemp(tmpl);
+    ASSERT(tmp_home != NULL, "mkdtemp created a disposable HOME for this test");
+
+    UiScreenStack stack;
+    ui_stack_init(&stack);
+
+    JobContext job_ctx;
+    job_context_set(&job_ctx, tmp_home, "TESTPROJ", "TESTJOB");
+    mkdir(tmp_home, 0755);
+
+    TestFeedState feed_state;
+    memset(&feed_state, 0, sizeof(feed_state));
+
+    MeasurePointsScreenCtx ctx;
+    ExportScreenCtx export_ctx;
+    export_screen_init(&export_ctx, &stack, &job_ctx);
+    measure_points_screen_init(&ctx, &stack, &job_ctx, make_test_feed(&feed_state),
+                               export_screen_as_ui_screen(&export_ctx));
+    ui_stack_push(&stack, measure_points_screen_as_ui_screen(&ctx));
+
+    feed_state.next.lat         = 47.9253;
+    feed_state.next.lon         = -97.0329;
+    feed_state.next.alt         = 250.0;
+    feed_state.next.fix_quality = (uint8_t)FIX_RTK_FIXED;
+    feed_state.next.hdop        = 0.8;
+    feed_state.next.num_sats    = 12;
+    feed_state.next.valid       = true;
+    ui_stack_tick(&stack, 0);
+
+    type_code_and_capture(&ctx, "+RCPF");
+    type_code_and_capture(&ctx, "RCPF");
+    type_code_and_capture(&ctx, "-RCPF");
+
+    ASSERT(ctx.status == MEASURE_POINTS_STATUS_NONE, "All three captures reported no error");
+    ASSERT(ctx.points.count == 3, "All three points were captured");
+    if (ctx.points.count == 3) {
+        ASSERT(strcmp(ctx.points.points[0].code, "+RCPF") == 0,
+              "Point 1's stored code is exactly \"+RCPF\", '+' included");
+        ASSERT(strcmp(ctx.points.points[1].code, "RCPF") == 0,
+              "Point 2's stored code is exactly \"RCPF\"");
+        ASSERT(strcmp(ctx.points.points[2].code, "-RCPF") == 0,
+              "Point 3's stored code is exactly \"-RCPF\", '-' included");
+    }
+
+    /* Now run the actual map-panel logic call (breaklines_build()) over
+     * this real, capture-produced store -- proving the '+' key's output
+     * is correctly interpreted end to end, not just stored verbatim. */
+    BreaklineSet lines;
+    breaklines_build(&ctx.points, &lines);
+
+    ASSERT(lines.count == 1, "Exactly one breakline is built from the three captured points");
+    if (lines.count == 1) {
+        const Breakline *line = &lines.lines[0];
+        ASSERT(strcmp(line->key, "RCPF") == 0, "The line's key is \"RCPF\"");
+        ASSERT(line->closed, "The line is closed (a matching '-RCPF' was captured)");
+        ASSERT(line->vertex_count == 3, "The line has exactly 3 vertices");
+        if (line->vertex_count == 3) {
+            ASSERT(line->vertex_indices[0] == 0, "Vertex 0 is the first captured point (+RCPF)");
+            ASSERT(line->vertex_indices[1] == 1, "Vertex 1 is the second captured point (RCPF)");
+            ASSERT(line->vertex_indices[2] == 2, "Vertex 2 is the third captured point (-RCPF)");
+        }
+    }
+
+    rmdir(tmp_home);
+}
+
+/* -------------------------------------------------------------------------
  * Keyboard toggle button: explicit show/hide trigger, independent of
  * field activation. Also confirms toggling off while already off (a
  * theoretical double-press race) doesn't somehow show it -- the
@@ -2433,6 +2556,7 @@ int main(void)
     test_export_no_job_blocks_export();
     test_measure_points_capture_and_persist_end_to_end();
     test_measure_points_typed_fields_and_height_correction();
+    test_measure_points_breakline_code_round_trips_through_capture();
     test_measure_points_keyboard_toggle_button();
     test_measure_points_back_closes_overlay_first();
     test_measure_points_back_button_tap_closes_overlay_first();
