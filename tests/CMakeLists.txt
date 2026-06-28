@@ -89,7 +89,12 @@ add_test(NAME test_keyboard COMMAND test_keyboard)
 # exercising their actual I/O. Also links collector/coords.c and libm
 # (target_link_libraries below) since measure_points.c calls
 # coords_wgs84_to_nd_north() for ND North job projection and cos() for
-# the local-fallback projection.
+# the local-fallback projection. collector/breaklines.c is linked because
+# measure_points_screen_draw.c's map panel calls breaklines_build() every
+# render, and this test's own breakline-capture test (see
+# test_measure_points_breakline_code_round_trips_through_capture() in
+# test_screens.c) calls it directly too -- breaklines.h's own exhaustive
+# logic coverage lives in the separate test_breaklines target below.
 add_executable(test_screens
     ${PROJECT_SOURCE_DIR}/tests/test_screens.c
     ${PROJECT_SOURCE_DIR}/src/ui/core/widget.c
@@ -121,6 +126,7 @@ add_executable(test_screens
     ${PROJECT_SOURCE_DIR}/src/collector/job_metadata.c
     ${PROJECT_SOURCE_DIR}/src/collector/measure_points.c
     ${PROJECT_SOURCE_DIR}/src/collector/measure_points_export.c
+    ${PROJECT_SOURCE_DIR}/src/collector/breaklines.c
     ${PROJECT_SOURCE_DIR}/src/collector/usb_export.c
     ${PROJECT_SOURCE_DIR}/src/collector/coords.c
     ${PROJECT_SOURCE_DIR}/src/survey/codelist.c
@@ -216,3 +222,27 @@ target_include_directories(test_usb_export PRIVATE
     ${PROJECT_SOURCE_DIR}/src
 )
 add_test(NAME test_usb_export COMMAND test_usb_export)
+
+# test_breaklines: collector/breaklines.h's breaklines_build() -- the
+# +/-KEY breakline-interpretation algorithm for the Measure Points map
+# panel. Pure logic, no display dependency (same logic/render split as
+# every other screen module -- see breaklines.h's own file-level doc
+# comment), and no networking/hardware state, so this gets a real,
+# exhaustive automated suite, same convention test_measure_points_export
+# above already established for a comparably pure-logic module. Needs
+# measure_points.c (MeasurePointStore/measure_points_add(), the type
+# this module operates on), and that pulls in coords.c + libm
+# transitively the same way test_screens above already needs them.
+add_executable(test_breaklines
+    ${PROJECT_SOURCE_DIR}/tests/test_breaklines.c
+    ${PROJECT_SOURCE_DIR}/src/collector/breaklines.c
+    ${PROJECT_SOURCE_DIR}/src/collector/measure_points.c
+    ${PROJECT_SOURCE_DIR}/src/collector/coords.c
+    ${PROJECT_SOURCE_DIR}/src/util/log.c
+)
+target_include_directories(test_breaklines PRIVATE
+    ${PROJECT_SOURCE_DIR}/include
+    ${PROJECT_SOURCE_DIR}/src
+)
+target_link_libraries(test_breaklines PRIVATE m)
+add_test(NAME test_breaklines COMMAND test_breaklines)
