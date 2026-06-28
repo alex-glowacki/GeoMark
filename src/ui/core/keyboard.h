@@ -42,17 +42,22 @@
  *     events to exercise that path in practice.
  *   - Character set is closed by construction: letters (rendered
  *     uppercase to match the legacy survey_screen.c keyboard's
- *     convention), digits, '.', '-', '_', and space. No other character
- *     can ever reach a buffer through this keyboard, which is also why
- *     no separate path-safety validation is needed wherever this
- *     keyboard feeds a value that becomes a filesystem path component
- *     (e.g. a project name) -- '.' is the one addition to this set
- *     (added for decimal numeric entry, e.g. Target height on Measure
- *     Points) and is itself a safe path character on every filesystem
- *     this project targets (no ".." traversal risk: the keyboard has no
- *     way to type two consecutive '.' keys into a context that builds a
- *     path from raw keystrokes without going through this project's own
- *     job/project-name validation first, same as any other character).
+ *     convention), digits, '.', '-', '_', '+', and space. No other
+ *     character can ever reach a buffer through this keyboard, which is
+ *     also why no separate path-safety validation is needed wherever
+ *     this keyboard feeds a value that becomes a filesystem path
+ *     component (e.g. a project name) -- '.' and '+' are the two
+ *     additions to the original set. '.' was added for decimal numeric
+ *     entry (e.g. Target height on Measure Points); '+' was added for
+ *     Measure Points' Code field, where a leading '+' or '-' marks the
+ *     start/end of a breakline (see collector/breaklines.h) -- '-' was
+ *     already present for this same purpose before breaklines existed.
+ *     Both are safe path characters on every filesystem this project
+ *     targets (no ".." traversal risk: the keyboard has no way to type
+ *     two consecutive '.' keys into a context that builds a path from
+ *     raw keystrokes without going through this project's own job/
+ *     project-name validation first, same as any other character; '+'
+ *     carries no path meaning at all on any of these filesystems).
  *   - Key labels (the single character/word ui_grid_add_button() stores
  *     as each key's `label`) are not copied by the grid -- see widget.h's
  *     ownership doc comment -- so they must outlive the widget. Rather
@@ -60,7 +65,7 @@
  *     between two screens that both embed a keyboard and are alive on
  *     the stack at once, e.g. Continue Project resuming under a still-
  *     live screen below it), the caller supplies its own UiKeyboardLabels
- *     storage, sized exactly for the 42 keys this layout produces. One
+ *     storage, sized exactly for the 43 keys this layout produces. One
  *     instance per screen that embeds a keyboard, living as long as that
  *     screen's own ctx does.
  *
@@ -73,17 +78,25 @@
  *                                       comment in keyboard.c for why it
  *                                       lives at the end of this row
  *                                       rather than its own row)
- *   Row 3:           ZXCVBNM-_         (9 keys)
+ *   Row 3:           ZXCVBNM-_+        (10 keys -- '+' appended for the
+ *                                       same reason '.' was appended to
+ *                                       Row 2: it brings this row up to
+ *                                       10 keys, matching Rows 0-2's span
+ *                                       exactly with zero new layout math;
+ *                                       see KB_ROW3's doc comment in
+ *                                       keyboard.c)
  *   Action row:      Space | Del | Done (3 keys)
- *   Total: 42 keys.
+ *   Total: 43 keys.
  *
  * Each char row is sized to fill the full 800px panel width (see
  * keyboard.c's KB_KEY_W/KB_GAP and per-row KB_ROWn_X), rather than the
  * original left-justified 40px-key layout that only spanned ~440px --
- * confirmed too cramped/lopsided on real hardware. Row 3 (9 keys, one
- * fewer than the other char rows) is centered independently, producing
- * a wider stagger inset than the other rows -- the same staggered-
- * QWERTY look as before, just filling the full width now.
+ * confirmed too cramped/lopsided on real hardware. Row 3 now matches
+ * Rows 0-2's 10-key span exactly ('+' appended, see KB_ROW3's doc
+ * comment in keyboard.c) -- the staggered-QWERTY look this used to get
+ * from being one key narrower is gone, but every row now uses the
+ * identical centering math, which is one less special case to keep
+ * straight.
  */
 
 #ifndef GEOMARK_UI_CORE_KEYBOARD_H
@@ -105,8 +118,8 @@
                              * for this module's own row math */
 #define KEYBOARD_HEIGHT 232 /* TFT_HEIGHT (480) - KEYBOARD_TOP_Y */
 
-/** Exact count of single-character keys across all four rows (10+10+10+9). */
-#define KB_CHAR_KEY_COUNT 39
+/** Exact count of single-character keys across all four rows (10+10+10+10). */
+#define KB_CHAR_KEY_COUNT 40
 
 /**
  * Caller-owned storage for the char keys' single-character label strings.
@@ -168,7 +181,7 @@ typedef struct {
  * UiKeyboardLabels's doc comment for why this can't be hidden as
  * internal static storage.
  *
- * Returns false if the grid does not have room for all 42 keys (caller
+ * Returns false if the grid does not have room for all 43 keys (caller
  * should treat this the same as any other ui_grid_add_* failure: a logged
  * error from widget.c, already, since this just calls ui_grid_add_button
  * in a loop).

@@ -22,7 +22,7 @@
  * Row contents — letters stored uppercase to match the legacy
  * survey_screen.c keyboard's on-screen convention (typed text displays
  * uppercase regardless of key label case, since there is only one case).
- * Combined length must equal KB_CHAR_KEY_COUNT (39): 10+10+10+9.
+ * Combined length must equal KB_CHAR_KEY_COUNT (40): 10+10+10+10.
  *
  * '.' lives at the end of Row 2 (ASDFGHJKL.) rather than getting a row of
  * its own: a fifth char row would overflow KEYBOARD_HEIGHT's fixed
@@ -33,12 +33,22 @@
  * layout case to add. Added for decimal numeric entry (e.g. Measure
  * Points' Target height field, "6.562") -- see keyboard.h's file-level
  * doc comment for the character-set-safety reasoning.
+ *
+ * '+' lives at the end of Row 3 (ZXCVBNM-_+) for the identical reason:
+ * it brings Row 3 up to 10 keys too, so EVERY char row now shares
+ * KB_KEY_W/KB_ROW0_X's centering math with zero new layout case --
+ * Row 3 no longer needs its own narrower-row centering offset (see
+ * KB_ROW3_X below, now equal to KB_ROW0_X/_1_X/_2_X). Added so Measure
+ * Points' Code field can type a leading '+' (breakline start) to match
+ * '-' (already present, breakline end) -- see collector/breaklines.h
+ * for what these mean and keyboard.h's file-level doc comment for the
+ * character-set-safety reasoning.
  * ---------------------------------------------------------------------- */
 
 static const char *const KB_ROW0 = "1234567890";
 static const char *const KB_ROW1 = "QWERTYUIOP";
 static const char *const KB_ROW2 = "ASDFGHJKL.";
-static const char *const KB_ROW3 = "ZXCVBNM-_";
+static const char *const KB_ROW3 = "ZXCVBNM-_+";
 
 /* KB_KEY_H/KB_GAP_V sized so 5 rows (4 char rows + action row) fit
  * exactly within KEYBOARD_HEIGHT (232px): 5*43 + 4*3 = 227px, leaving a
@@ -50,15 +60,12 @@ static const char *const KB_ROW3 = "ZXCVBNM-_";
  * KB_KEY_W/KB_GAP_H: full-width rework (real-hardware feedback: the
  * original 40px-wide, left-justified keys only spanned ~440px of the
  * 800px panel, leaving the right third empty and looking lopsided/
- * cramped). One uniform key width for every char row, sized so the
- * three 10-key rows (0/1/2) span 776px (10*74 + 9*4 = 776), centered
- * with a 12px margin each side -- this is the widest row, so it sets
- * the shared key size. Row 3 (9 keys, one fewer) is centered
- * independently at the SAME key width, producing a wider 51px inset
- * each side -- this is what preserves the staggered-QWERTY look (Row 3
- * already reads as "indented" relative to the rows above it, same as
- * the original layout's intent), just filling the full panel width
- * instead of stopping at ~440px. */
+ * cramped). One uniform key width for every char row, sized so a
+ * 10-key row spans 776px (10*74 + 9*4 = 776), centered with a 12px
+ * margin each side. All four char rows are now 10 keys (Row 2 got '.'
+ * appended in an earlier change; Row 3 gets '+' appended here -- see
+ * KB_ROW3's own doc comment above), so all four rows share this exact
+ * centering -- no row-specific offset is needed anymore. */
 #define KB_KEY_W     74
 #define KB_KEY_H     43
 #define KB_GAP_H      4
@@ -71,17 +78,19 @@ static const char *const KB_ROW3 = "ZXCVBNM-_";
 #define KB_ACTION_Y (KEYBOARD_TOP_Y + 4 * (KB_KEY_H + KB_GAP_V))
 #define KB_ACTION_H KB_KEY_H
 
-/* Row X offsets -- each row centered independently within the 800px
- * panel at the shared KB_KEY_W above (see that constant's doc comment
- * for the centering math). TFT_WIDTH literal (800), not a #include of
- * ui/tft/display.h -- same no-display-dependency convention this
- * module's own file-level doc comment already establishes, and the same
- * literal-800 convention measure_points_screen.c's own
- * add_code_picker_buttons() already uses for an identical reason. */
+/* Row X offsets -- all four char rows now centered identically within
+ * the 800px panel at the shared KB_KEY_W above (see that constant's doc
+ * comment for the centering math) -- Row 3 no longer needs its own
+ * narrower-row offset now that '+' brings it to 10 keys too. TFT_WIDTH
+ * literal (800), not a #include of ui/tft/display.h -- same no-display-
+ * dependency convention this module's own file-level doc comment
+ * already establishes, and the same literal-800 convention
+ * measure_points_screen.c's own add_code_picker_buttons() already uses
+ * for an identical reason. */
 #define KB_ROW0_X 12  /* 10 keys: (800 - (10*74 + 9*4)) / 2 = 12 */
 #define KB_ROW1_X 12  /* 10 keys, same span as Row 0 */
 #define KB_ROW2_X 12  /* 10 keys (incl '.'), same span as Row 0/1 */
-#define KB_ROW3_X 51  /* 9 keys: (800 - (9*74 + 8*4)) / 2 = 51 */
+#define KB_ROW3_X 12  /* 10 keys (incl '+'), same span as Row 0/1/2 */
 
 /* Action row (Space/Del/Done) -- same 12px margin and full-width span as
  * the char rows above, rather than the original layout's left-justified
