@@ -364,16 +364,27 @@ UiScreen measure_points_screen_as_ui_screen(MeasurePointsScreenCtx *ctx);
 
 #define MP_READOUT_Y (MP_CAPTURE_Y + MP_CAPTURE_H + 10)
 
-/* Export button -- below the live-fix readout's three text rows
- * (MP_READOUT_Y..MP_READOUT_Y+~36px), inside the ~130px of panel
- * height that remains free below it (PANEL_BOTTOM_Y=472 minus the
- * readout's own bottom edge) -- this screen's fixed layout has room
- * for exactly one more row here without needing any redesign. Pushes
- * export_screen (see export_screen.h) rather than performing the
- * export inline -- this screen's right panel has no space left for
- * a result message or format choice beyond a single button, see
- * that header's own doc comment for the full reasoning. */
-#define MP_EXPORT_Y (MP_READOUT_Y + 48)
+/** Live-fix readout row height and row count -- see draw_status_column()
+ *  in measure_points_screen_draw.c for what each row shows (Lat, Lon,
+ *  corrected elevation, HRMS/VRMS, points captured). 14px rows (tighter
+ *  than this screen's other 16px-spaced single-line text, matching
+ *  MP_LABEL_H's own convention) so 6 rows fit in the available space
+ *  without pushing MP_EXPORT_Y uncomfortably close to PANEL_BOTTOM_Y --
+ *  see MP_EXPORT_Y's own doc comment for the actual margin this leaves. */
+#define MP_READOUT_ROW_H 14
+#define MP_READOUT_ROWS 6
+
+/* Export button -- below the live-fix readout's MP_READOUT_ROWS rows
+ * (MP_READOUT_Y..MP_READOUT_Y + MP_READOUT_ROWS*MP_READOUT_ROW_H), inside
+ * the panel height that remains free below it (PANEL_BOTTOM_Y=472 minus
+ * the readout's own bottom edge, ~50px of margin at the 6-row count
+ * above) -- this screen's fixed layout has room for exactly one more
+ * row here without needing any redesign. Pushes export_screen (see
+ * export_screen.h) rather than performing the export inline -- this
+ * screen's right panel has no space left for a result message or
+ * format choice beyond a single button, see that header's own doc
+ * comment for the full reasoning. */
+#define MP_EXPORT_Y (MP_READOUT_Y + MP_READOUT_ROWS * MP_READOUT_ROW_H + 10)
 #define MP_EXPORT_H 32
 
 /* -------------------------------------------------------------------------

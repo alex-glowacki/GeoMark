@@ -40,6 +40,7 @@
 #include "util/units.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
 
@@ -269,25 +270,64 @@ static void draw_status_column(const MeasurePointsScreenCtx *ctx)
     draw_field_label(MP_CODE_LABEL_Y, "Code:");
     draw_field_label(MP_HEIGHT_LABEL_Y, "Target height (ft):");
 
-    /* Compact live-fix readout, below Capture Point. */
-    uint16_t readout_row1 = MP_READOUT_Y;
-    uint16_t readout_row2 = (uint16_t)(MP_READOUT_Y + 16);
-    uint16_t readout_row3 = (uint16_t)(MP_READOUT_Y + 32);
+    /* Live-fix readout, below Capture Point. MP_READOUT_ROWS rows at
+     * MP_READOUT_ROW_H each (measure_points_screen.h) -- Lat, Lon
+     * (both DMS-with-bearing, e.g. "97d1'58.44\"W"), corrected
+     * elevation (raw altitude minus the typed Target height, the same
+     * correction on_capture_point() applies when a point is actually
+     * captured -- see units.h's gm_format_dms_bearing() for the format
+     * and measure_points_screen.c's on_capture_point() for the
+     * correction math this mirrors), HDOP/sats, HRMS/VRMS, and points
+     * captured. */
+    uint16_t readout_row[MP_READOUT_ROWS];
+    for (int i = 0; i < MP_READOUT_ROWS; i++)
+        readout_row[i] = (uint16_t)(MP_READOUT_Y + i * MP_READOUT_ROW_H);
 
     if (!pos->valid) {
-        display_draw_string(FIELD_LABEL_X, readout_row1, "Waiting for fix...",
+        display_draw_string(FIELD_LABEL_X, readout_row[0], "Waiting for fix...",
                             TFT_GRAY, TFT_BLACK, 1);
     } else {
-        snprintf(buf, sizeof(buf), "%.6f, %.6f", pos->lat, pos->lon);
-        display_draw_string(FIELD_LABEL_X, readout_row1, buf, TFT_WHITE, TFT_BLACK, 1);
+        char dms_buf[32];
 
-        snprintf(buf, sizeof(buf), "Alt %.1fft  HDOP %.1f  Sats %02u",
-                gm_m_to_intl_ft(pos->alt), pos->hdop, (unsigned)pos->num_sats);
-        display_draw_string(FIELD_LABEL_X, readout_row2, buf, TFT_WHITE, TFT_BLACK, 1);
+        gm_format_dms_bearing(pos->lat, true, dms_buf, sizeof(dms_buf));
+        snprintf(buf, sizeof(buf), "Lat  %s", dms_buf);
+        display_draw_string(FIELD_LABEL_X, readout_row[0], buf, TFT_WHITE, TFT_BLACK, 1);
+
+        gm_format_dms_bearing(pos->lon, false, dms_buf, sizeof(dms_buf));
+        snprintf(buf, sizeof(buf), "Lon  %s", dms_buf);
+        display_draw_string(FIELD_LABEL_X, readout_row[1], buf, TFT_WHITE, TFT_BLACK, 1);
+
+        /* Corrected elevation: the typed Target height field is parsed
+         * the same way on_capture_point() parses it at capture time
+         * (atof() on height_buf, feet -> meters via gm_intl_ft_to_m()),
+         * so this preview always matches what an actual capture right
+         * now would record -- it is not a separate/independent
+         * calculation that could silently drift from the real one. */
+        double target_height_ft = atof(ctx->height_buf);
+        double target_height_m  = gm_intl_ft_to_m(target_height_ft);
+        double corrected_alt_m  = pos->alt - target_height_m;
+        snprintf(buf, sizeof(buf), "Elev %.2fft (raw %.2fft)",
+                gm_m_to_intl_ft(corrected_alt_m), gm_m_to_intl_ft(pos->alt));
+        display_draw_string(FIELD_LABEL_X, readout_row[2], buf, TFT_WHITE, TFT_BLACK, 1);
+
+        snprintf(buf, sizeof(buf), "HDOP %.1f  Sats %02u", pos->hdop, (unsigned)pos->num_sats);
+        display_draw_string(FIELD_LABEL_X, readout_row[3], buf, TFT_WHITE, TFT_BLACK, 1);
+
+        /* HRMS/VRMS: not yet available. This feed only carries HDOP
+         * (from the UM980's $GGA sentence) -- true horizontal/vertical
+         * RMS precision figures require parsing $GST (GPS Pseudorange
+         * Noise Statistics), which gnss/nmea.c does not implement yet.
+         * Showing "N/A" here is an honest placeholder rather than
+         * mislabeling HDOP as RMS (a real, different quantity) or
+         * silently omitting the row -- the layout reserves this row now
+         * so wiring real $GST-derived values in later is a pure data
+         * change, no layout rework. */
+        display_draw_string(FIELD_LABEL_X, readout_row[4], "HRMS N/A  VRMS N/A",
+                            TFT_GRAY, TFT_BLACK, 1);
     }
 
     snprintf(buf, sizeof(buf), "Points captured: %u", ctx->points.count);
-    display_draw_string(FIELD_LABEL_X, readout_row3, buf, TFT_CYAN, TFT_BLACK, 1);
+    display_draw_string(FIELD_LABEL_X, readout_row[5], buf, TFT_CYAN, TFT_BLACK, 1);
 }
 
 /* -------------------------------------------------------------------------
