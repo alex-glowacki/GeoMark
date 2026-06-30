@@ -31,6 +31,21 @@
 
 #define MEASURE_POINTS_CSV_MAX_LINE 256
 
+/* Column order is fixed and must match between the header row written
+ * here and the header row checked in measure_points_load_csv() below.
+ * name is the FINAL column, same reasoning code already had (a free-
+ * form field needs to be the rest-of-line catch, not a %s-matched
+ * token -- see measure_points_load_csv()'s own doc comment on why an
+ * empty trailing %s field doesn't parse). With two free-form trailing
+ * fields (name, code) now, name comes second-to-last and is parsed up
+ * to the LAST comma in the line, with code taking everything after
+ * that -- see the parsing comment below for the exact split logic.
+ * Declared at file scope (above all functions that use it) so both
+ * measure_points_rewrite_csv() and measure_points_append_csv() can
+ * reference it without forward declarations. */
+static const char *CSV_HEADER =
+    "point_num,timestamp,lat,lon,alt,raw_alt,target_height_m,fix_quality,hdop,num_sats,name,code\n";
+
 /* -------------------------------------------------------------------------
  * In-memory store
  * ---------------------------------------------------------------------- */
@@ -53,25 +68,70 @@ gm_status_t measure_points_add(MeasurePointStore *store, MeasurePoint point)
     return GM_OK;
 }
 
+gm_status_t measure_points_remove(MeasurePointStore *store, uint32_t index)
+{
+    if (!store || index >= store->count) {
+        log_warn("measure_points_remove: index %u out of range (count=%u)",
+                 index, store ? store->count : 0);
+        return GM_ERR_GENERIC;
+    }
+
+    /* Shift every entry after the removed one down by one position.
+     * memmove handles the (index == count-1) last-element case
+     * correctly (zero bytes moved) the same as any interior position. */
+    uint32_t tail = store->count - index - 1;
+    if (tail > 0)
+        memmove(&store->points[index], &store->points[index + 1],
+                tail * sizeof(MeasurePoint));
+
+    store->count--;
+    log_info("measure_points_remove: removed point at index %u, store now has %u points",
+             index, store->count);
+    return GM_OK;
+}
+
 /* -------------------------------------------------------------------------
  * CSV persistence
  * ---------------------------------------------------------------------- */
 
-/* Column order is fixed and must match between the header row written
- * here and the header row checked in measure_points_load_csv() below.
- * name is the FINAL column, same reasoning code already had (a free-
- * form field needs to be the rest-of-line catch, not a %s-matched
- * token -- see measure_points_load_csv()'s own doc comment on why an
- * empty trailing %s field doesn't parse). With two free-form trailing
- * fields (name, code) now, name comes second-to-last and is parsed up
- * to the LAST comma in the line, with code taking everything after
- * that -- see the parsing comment below for the exact split logic. */
-static const char *CSV_HEADER =
-    "point_num,timestamp,lat,lon,alt,raw_alt,target_height_m,fix_quality,hdop,num_sats,name,code\n";
-
 void measure_points_csv_path(const char *job_dir, char *buf, size_t buf_len)
 {
     snprintf(buf, buf_len, "%s/points.csv", job_dir);
+}
+
+gm_status_t measure_points_rewrite_csv(const char *path, const MeasurePointStore *store)
+{
+    if (!store)
+        return GM_ERR_GENERIC;
+
+    FILE *f = fopen(path, "w");
+    if (!f) {
+        log_error("measure_points_rewrite_csv: cannot open '%s': %s", path, strerror(errno));
+        return GM_ERR_IO;
+    }
+
+    fputs(CSV_HEADER, f);
+
+    for (uint32_t i = 0; i < store->count; i++) {
+        const MeasurePoint *pt = &store->points[i];
+        fprintf(f, "%u,%lld,%.8f,%.8f,%.3f,%.3f,%.3f,%u,%.2f,%u,%s,%s\n",
+                pt->point_num,
+                (long long)pt->timestamp,
+                pt->lat,
+                pt->lon,
+                pt->alt,
+                pt->raw_alt,
+                pt->target_height_m,
+                (unsigned)pt->fix_quality,
+                pt->hdop,
+                (unsigned)pt->num_sats,
+                pt->name,
+                pt->code);
+    }
+
+    fclose(f);
+    log_info("measure_points_rewrite_csv: wrote %u point(s) to '%s'", store->count, path);
+    return GM_OK;
 }
 
 gm_status_t measure_points_append_csv(const char *path, const MeasurePoint *point)
@@ -129,9 +189,9 @@ gm_status_t measure_points_load_csv(const char *path, MeasurePointStore *store)
     char line[MEASURE_POINTS_CSV_MAX_LINE];
 
     /* Header row -- must match exactly, same strictness coords.h's own
-     * forward-only-transform comment implies for this codebase ("no
+     * forward-only-transform comment implies for this codebase (\"no
      * range check is performed... it simply becomes a poor
-     * approximation" is the documented tolerance level; a header
+     * approximation\" is the documented tolerance level; a header
      * mismatch here is a real format problem, not a tolerance case). */
     if (!fgets(line, sizeof(line), f)) {
         log_warn("measure_points_load_csv: '%s' is empty -- starting empty", path);

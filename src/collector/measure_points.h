@@ -133,6 +133,37 @@ void measure_points_init(MeasurePointStore *store);
  */
 gm_status_t measure_points_add(MeasurePointStore *store, MeasurePoint point);
 
+/**
+ * Removes the point at the given zero-based index from the in-memory
+ * store by shifting all subsequent entries down by one. Preserves the
+ * point_num of every surviving entry -- point_num is assigned at
+ * capture time and is part of the field crew's recorded data (called
+ * out by radio, written in the field book); it is NOT renumbered when a
+ * point is deleted, the same way a deleted row in a field book is
+ * crossed out, not renumbered. The caller is responsible for rewriting
+ * points.csv after this call (via measure_points_rewrite_csv()) so
+ * in-memory and on-disk state stay in sync.
+ *
+ * Returns GM_OK on success. Returns GM_ERR_GENERIC if store is NULL or
+ * index is out of range (>= store->count), leaving the store unchanged.
+ */
+gm_status_t measure_points_remove(MeasurePointStore *store, uint32_t index);
+
+/**
+ * Rewrites the entire points.csv at path from the current in-memory
+ * store (overwrite, not append). Used after measure_points_remove()
+ * to keep on-disk state consistent with the in-memory store. Writing
+ * all N rows in one pass avoids the "append one row that was never
+ * really deleted" inconsistency that would arise from trying to patch
+ * the existing file in place. If store->count == 0, writes a
+ * header-only file (same "empty is not an error" stance as
+ * measure_points_load_csv()).
+ *
+ * Returns GM_OK on success, GM_ERR_IO if path cannot be opened for
+ * writing, GM_ERR_GENERIC if store is NULL.
+ */
+gm_status_t measure_points_rewrite_csv(const char *path, const MeasurePointStore *store);
+
 /* -------------------------------------------------------------------------
  * CSV persistence -- ~/geomark-data/projects/<project>/<job>/points.csv,
  * same directory job.ini already lives in (see job_metadata.h). CSV
