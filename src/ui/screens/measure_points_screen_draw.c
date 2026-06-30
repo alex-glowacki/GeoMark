@@ -547,10 +547,26 @@ void measure_points_screen_render(void *raw_ctx)
     if (ctx->overlay != MEASURE_POINTS_OVERLAY_NONE)
         draw_overlay_backdrop();
 
+    /* Point list overlay title -- drawn after the backdrop so it lands
+     * on top of it, before ui_grid_render() adds the row widgets on top
+     * of the title. The keyboard and code-picker overlays are self-
+     * labelled by their own widget content; the point list needs an
+     * explicit banner so the crew knows what screen they are on. */
+    if (ctx->overlay == MEASURE_POINTS_OVERLAY_POINT_LIST) {
+        char list_title[48];
+        snprintf(list_title, sizeof(list_title), "Points  (%u captured)", ctx->points.count);
+        display_draw_string(8, (uint16_t)(MP_OVERLAY_TOP_Y + 6),
+                            list_title, TFT_CYAN, TFT_BLACK, 1);
+        /* Thin separator line below the title. */
+        display_fill_rect(0, (uint16_t)(MP_OVERLAY_TOP_Y + 22),
+                          TFT_WIDTH, 1, TFT_DKGRAY);
+    }
+
     /* Renders whichever widgets are currently in ctx->grid -- base
      * fields/buttons only when no overlay is open, or base fields plus
-     * the keyboard's keys / code-picker's buttons when one is (see
-     * measure_points_screen.c's rebuild_grid()). Drawn last so overlay
-     * widgets land on top of the backdrop just painted above. */
+     * the keyboard's keys / code-picker's buttons / point list rows
+     * when one is (see measure_points_screen.c's rebuild_grid()).
+     * Drawn last so overlay widgets land on top of the backdrop and
+     * title painted above. */
     ui_grid_render(&ctx->grid);
 }

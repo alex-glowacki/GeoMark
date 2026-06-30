@@ -18,20 +18,16 @@
 #include "ui/tft/display.h" /* TFT_WIDTH only */
 #include "util/log.h"
 
-#define EXPORT_MARGIN 20
-#define EXPORT_BTN_H  56
-#define EXPORT_GAP    18
-#define EXPORT_BTN_W  (TFT_WIDTH - 2 * EXPORT_MARGIN)
-#define EXPORT_BTN_TOP_Y 150 /* leaves room above for title + job summary text,
-                              * see export_screen_draw.c */
+#define EXPORT_MARGIN   20
+#define EXPORT_BTN_H    56
+#define EXPORT_GAP      18
+#define EXPORT_BTN_W    (TFT_WIDTH - 2 * EXPORT_MARGIN)
+#define EXPORT_BTN_TOP_Y 150
 
 /* -------------------------------------------------------------------------
  * Reload -- same "read the real on-disk state every time this screen
- * becomes visible" stance reload_job_data() (measure_points_screen.c)
- * and rebuild_job_list() (open_job_screen.c) already each established.
- * Called from on_enter, not init -- the active job (via JobContext)
- * can change between visits (a different job opened via Open Existing
- * Job, then Measure Points -> Export again).
+ * becomes visible" stance measure_points_screen.c and open_job_screen.c
+ * already each establish.
  * ---------------------------------------------------------------------- */
 
 static void reload_export_data(ExportScreenCtx *ctx)
@@ -46,7 +42,7 @@ static void reload_export_data(ExportScreenCtx *ctx)
 
     char ini_path[640];
     snprintf(ini_path, sizeof(ini_path), "%s/job.ini", ctx->job_ctx->job_dir);
-    job_metadata_load(ini_path, &ctx->job_meta); /* missing file -> defaults, not an error */
+    job_metadata_load(ini_path, &ctx->job_meta);
 
     char csv_path[600];
     measure_points_csv_path(ctx->job_ctx->job_dir, csv_path, sizeof(csv_path));
@@ -59,22 +55,10 @@ static void reload_export_data(ExportScreenCtx *ctx)
     ctx->status = EXPORT_SCREEN_STATUS_NONE;
 }
 
-/**
- * The job's points are stored in WGS84 lat/lon (measure_points.h's
- * MeasurePoint doc comment) -- the local-fallback projection
- * (measure_points_project(), see that function's own doc comment)
- * needs an origin point for every coord_sys except ND North, where
- * the projection is absolute and the origin is ignored regardless
- * (measure_points_export.h's own file-level doc comment). Same "first
- * point in the store sets the origin" convention
- * measure_points_screen.c's reload_job_data() already establishes for
- * the very same store shape -- recomputed here rather than threaded
- * through JobContext, since nothing else on this screen needs an
- * origin and MeasurePointStore already has everything required to
- * derive it.
- */
-static void resolve_origin(const MeasurePointStore *points, double *origin_lat,
-                           double *origin_lon)
+/* "First point in the store sets the origin" -- same convention
+ * measure_points_screen.c's reload_job_data() already establishes. */
+static void resolve_origin(const MeasurePointStore *points,
+                           double *origin_lat, double *origin_lon)
 {
     if (points->count > 0) {
         *origin_lat = points->points[0].lat;
@@ -86,41 +70,44 @@ static void resolve_origin(const MeasurePointStore *points, double *origin_lat,
 }
 
 /* -------------------------------------------------------------------------
- * Destination resolution -- USB drive when actually mounted, internal
- * job_dir/export/ otherwise. One shared resolver rather than a
- * per-format function: usb_export_path_for_job() already computes both
- * the LandXML and CSV destination paths together in a single call (one
- * mkdir sequence for both), so resolving both up front and letting each
- * button callback pick the one it needs is simpler than two near-
- * duplicate functions each independently calling usb_export_path_for_job()
- * and discarding half of what it returns.
+ * Destination resolution
  *
- * Checked fresh on every call (not cached anywhere in ExportScreenCtx)
- * -- see export_screen.h's file-level doc comment for why this must
- * reflect the drive's state at the moment of the actual button press,
- * not whenever this screen was last entered.
- *
- * Returns true if the USB drive was used (out_xml_path/out_csv_path are
- * both on the USB drive), false if this fell back to internal storage
- * -- either because the drive was not mounted, or because
- * usb_export_path_for_job() itself failed for any other reason (e.g.
- * an unexpectedly-shaped job_dir). Either way the crew still gets
- * their export, just not on the drive, and the caller is responsible
- * for reporting that as a FALLBACK status rather than a silent
- * success.
+ * Tries the USB drive first (if mounted); falls back to the internal
+ * job_dir/export/ location. usb_export_path_for_job() resolves both
+ * the LandXML and PNEZD CSV destination paths together in one call.
+ * The PNEZD path is derived by replacing "points_export.csv" with
+ * "points_pnezd.csv" in the resolved csv_path, keeping the same
+ * directory on whichever destination won (USB or internal).
  * ---------------------------------------------------------------------- */
 
-static bool resolve_export_destination(const JobContext *job_ctx, char *out_xml_path,
-                                       size_t xml_path_len, char *out_csv_path,
-                                       size_t csv_path_len)
+static bool resolve_export_destination(const JobContext *job_ctx,
+                                       char *out_xml_path, size_t xml_len,
+                                       char *out_pnezd_path, size_t pnezd_len)
 {
-    if (usb_export_is_mounted() &&
-        usb_export_path_for_job(job_ctx->job_dir, out_xml_path, xml_path_len, out_csv_path,
-                                csv_path_len) == GM_OK)
-        return true;
+    /* usb_export_path_for_job() fills both xml and csv paths. We use
+     * the csv path only to derive the pnezd path (same directory,
+     * different filename). A temporary csv_path buffer is sufficient. */
+    char csv_path[USB_EXPORT_PATH_MAX];
 
-    measure_points_export_landxml_path(job_ctx->job_dir, out_xml_path, xml_path_len);
-    measure_points_export_csv_path(job_ctx->job_dir, out_csv_path, csv_path_len);
+    if (usb_export_is_mounted() &&
+        usb_export_path_for_job(job_ctx->job_dir,
+                                out_xml_path, xml_len,
+                                csv_path, sizeof(csv_path)) == GM_OK) {
+        /* Replace filename: "points_export.csv" -> "points_pnezd.csv"
+         * in the same USB directory. Find the last '/' and rebuild. */
+        char *last_slash = strrchr(csv_path, '/');
+        if (last_slash) {
+            *last_slash = '\0';
+            snprintf(out_pnezd_path, pnezd_len, "%s/points_pnezd.csv", csv_path);
+        } else {
+            snprintf(out_pnezd_path, pnezd_len, "%s", csv_path);
+        }
+        return true;
+    }
+
+    /* Internal storage fallback. */
+    measure_points_export_landxml_path(job_ctx->job_dir, out_xml_path, xml_len);
+    measure_points_export_pnezd_path(job_ctx->job_dir, out_pnezd_path, pnezd_len);
     return false;
 }
 
@@ -142,18 +129,14 @@ static void on_export_landxml(UiWidget *self, void *screen_ctx)
     resolve_origin(&ctx->points, &origin_lat, &origin_lon);
 
     char xml_path[USB_EXPORT_PATH_MAX];
-    char csv_path[USB_EXPORT_PATH_MAX]; /* unused by this callback, but
-                                         * resolve_export_destination()
-                                         * always resolves both together --
-                                         * see that function's own doc
-                                         * comment for why */
-    bool used_usb =
-        resolve_export_destination(ctx->job_ctx, xml_path, sizeof(xml_path), csv_path,
-                                   sizeof(csv_path));
+    char pnezd_path[USB_EXPORT_PATH_MAX];
+    bool used_usb = resolve_export_destination(ctx->job_ctx,
+                                               xml_path, sizeof(xml_path),
+                                               pnezd_path, sizeof(pnezd_path));
 
-    gm_status_t rc = measure_points_export_landxml(xml_path, &ctx->points, &ctx->job_meta,
+    gm_status_t rc = measure_points_export_landxml(xml_path, &ctx->points,
+                                                   &ctx->job_meta,
                                                    origin_lat, origin_lon);
-
     if (rc != GM_OK) {
         ctx->status = EXPORT_SCREEN_STATUS_LANDXML_ERROR;
         return;
@@ -179,28 +162,27 @@ static void on_export_csv(UiWidget *self, void *screen_ctx)
     double origin_lat, origin_lon;
     resolve_origin(&ctx->points, &origin_lat, &origin_lon);
 
-    char xml_path[USB_EXPORT_PATH_MAX]; /* unused by this callback, see
-                                         * on_export_landxml()'s identical
-                                         * comment above */
-    char csv_path[USB_EXPORT_PATH_MAX];
-    bool used_usb =
-        resolve_export_destination(ctx->job_ctx, xml_path, sizeof(xml_path), csv_path,
-                                   sizeof(csv_path));
+    char xml_path[USB_EXPORT_PATH_MAX]; /* unused by this callback */
+    char pnezd_path[USB_EXPORT_PATH_MAX];
+    bool used_usb = resolve_export_destination(ctx->job_ctx,
+                                               xml_path, sizeof(xml_path),
+                                               pnezd_path, sizeof(pnezd_path));
 
-    gm_status_t rc = measure_points_export_csv(csv_path, &ctx->points, &ctx->job_meta, origin_lat,
-                                               origin_lon);
-
+    gm_status_t rc = measure_points_export_pnezd(pnezd_path, &ctx->points,
+                                                  &ctx->job_meta,
+                                                  origin_lat, origin_lon);
     if (rc != GM_OK) {
         ctx->status = EXPORT_SCREEN_STATUS_CSV_ERROR;
         return;
     }
 
-    ctx->status = used_usb ? EXPORT_SCREEN_STATUS_CSV_OK : EXPORT_SCREEN_STATUS_CSV_OK_FALLBACK;
-    log_info("export_screen: wrote CSV for job '%s' (%u points) to %s (%s)", ctx->job_ctx->name,
-             ctx->points.count, csv_path, used_usb ? "USB" : "internal storage");
+    ctx->status = used_usb ? EXPORT_SCREEN_STATUS_CSV_OK
+                           : EXPORT_SCREEN_STATUS_CSV_OK_FALLBACK;
+    log_info("export_screen: wrote PNEZD CSV for job '%s' (%u points) to %s (%s)",
+             ctx->job_ctx->name, ctx->points.count, pnezd_path,
+             used_usb ? "USB" : "internal storage");
 }
 
-/** See ui/core/widget.h's ui_grid_add_back_button() doc comment. */
 static void on_back(UiWidget *self, void *screen_ctx)
 {
     ExportScreenCtx *ctx = (ExportScreenCtx *)screen_ctx;
@@ -212,7 +194,8 @@ static void on_back(UiWidget *self, void *screen_ctx)
  * Lifecycle
  * ---------------------------------------------------------------------- */
 
-void export_screen_init(ExportScreenCtx *ctx, UiScreenStack *stack, const JobContext *job_ctx)
+void export_screen_init(ExportScreenCtx *ctx, UiScreenStack *stack,
+                        const JobContext *job_ctx)
 {
     memset(ctx, 0, sizeof(*ctx));
     ctx->stack   = stack;
@@ -223,12 +206,13 @@ void export_screen_init(ExportScreenCtx *ctx, UiScreenStack *stack, const JobCon
 
     ui_grid_init(&ctx->grid, ctx);
 
-    UiRect r1 = { EXPORT_MARGIN, EXPORT_BTN_TOP_Y, EXPORT_BTN_W, EXPORT_BTN_H };
-    UiRect r2 = { EXPORT_MARGIN, EXPORT_BTN_TOP_Y + (EXPORT_BTN_H + EXPORT_GAP), EXPORT_BTN_W,
-                 EXPORT_BTN_H };
+    UiRect r1 = { EXPORT_MARGIN, EXPORT_BTN_TOP_Y,
+                  EXPORT_BTN_W, EXPORT_BTN_H };
+    UiRect r2 = { EXPORT_MARGIN, EXPORT_BTN_TOP_Y + EXPORT_BTN_H + EXPORT_GAP,
+                  EXPORT_BTN_W, EXPORT_BTN_H };
 
     ui_grid_add_button(&ctx->grid, r1, "Export LandXML", on_export_landxml);
-    ui_grid_add_button(&ctx->grid, r2, "Export CSV", on_export_csv);
+    ui_grid_add_button(&ctx->grid, r2, "Export CSV (PNEZD)", on_export_csv);
     ui_grid_add_back_button(&ctx->grid, on_back);
 }
 
@@ -244,7 +228,7 @@ static bool export_on_event(void *raw_ctx, UiEvent ev)
     ExportScreenCtx *ctx = (ExportScreenCtx *)raw_ctx;
 
     if (ev.type == UI_EVENT_BACK)
-        return false; /* unconsumed -- stack pops back to Measure Points */
+        return false;
 
     return ui_grid_handle_event(&ctx->grid, ev);
 }

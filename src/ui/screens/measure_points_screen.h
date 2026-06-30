@@ -216,6 +216,14 @@ typedef enum {
     MEASURE_POINTS_OVERLAY_NONE = 0,
     MEASURE_POINTS_OVERLAY_KEYBOARD,
     MEASURE_POINTS_OVERLAY_CODE_PICKER,
+    MEASURE_POINTS_OVERLAY_POINT_LIST, /* scrollable list of captured
+                                        * points with per-row Delete
+                                        * buttons; opens on top of the
+                                        * full panel (map + status) so
+                                        * the list is full-width rather
+                                        * than right-column-only, same
+                                        * MP_OVERLAY_TOP_Y boundary as
+                                        * the keyboard overlay */
 } MeasurePointsOverlay;
 
 /** Upper bound on code-picker list entries shown per screen -- matches
@@ -360,7 +368,7 @@ UiScreen measure_points_screen_as_ui_screen(MeasurePointsScreenCtx *ctx);
 #define MP_KEYBOARD_TOGGLE_H 26
 
 #define MP_CAPTURE_Y (MP_KEYBOARD_TOGGLE_Y + MP_KEYBOARD_TOGGLE_H + 10)
-#define MP_CAPTURE_H 32
+#define MP_CAPTURE_H 40
 
 #define MP_READOUT_Y (MP_CAPTURE_Y + MP_CAPTURE_H + 10)
 
@@ -377,15 +385,25 @@ UiScreen measure_points_screen_as_ui_screen(MeasurePointsScreenCtx *ctx);
 /* Export button -- below the live-fix readout's MP_READOUT_ROWS rows
  * (MP_READOUT_Y..MP_READOUT_Y + MP_READOUT_ROWS*MP_READOUT_ROW_H), inside
  * the panel height that remains free below it (PANEL_BOTTOM_Y=472 minus
- * the readout's own bottom edge, ~50px of margin at the 6-row count
- * above) -- this screen's fixed layout has room for exactly one more
- * row here without needing any redesign. Pushes export_screen (see
- * export_screen.h) rather than performing the export inline -- this
- * screen's right panel has no space left for a result message or
- * format choice beyond a single button, see that header's own doc
- * comment for the full reasoning. */
-#define MP_EXPORT_Y (MP_READOUT_Y + MP_READOUT_ROWS * MP_READOUT_ROW_H + 10)
-#define MP_EXPORT_H 32
+ * the readout's own bottom edge, ~42px of margin at the 6-row count
+ * above, after MP_CAPTURE_H was raised to 40) -- this screen's fixed
+ * layout has room for exactly two more rows here without any redesign.
+ * Pushes export_screen (see export_screen.h) rather than performing the
+ * export inline -- this screen's right panel has no space left for a
+ * result message or format choice beyond a single button, see that
+ * header's own doc comment for the full reasoning. */
+#define MP_EXPORT_Y (MP_READOUT_Y + MP_READOUT_ROWS * MP_READOUT_ROW_H + 6)
+#define MP_EXPORT_H 28
+
+/* Points List button -- immediately below Export, same compact height.
+ * Opens the MEASURE_POINTS_OVERLAY_POINT_LIST overlay (a scrollable
+ * list of every captured point with per-row Delete buttons), the same
+ * overlay mechanism as the keyboard and code-picker already use. Taller
+ * region: overlay covers the left map panel portion (MP_OVERLAY_TOP_Y
+ * downward), giving a wider list than the right-column-only keyboard
+ * overlay would allow, so multiple-column per-row layout is possible. */
+#define MP_POINTS_LIST_Y (MP_EXPORT_Y + MP_EXPORT_H + 6)
+#define MP_POINTS_LIST_H 28
 
 /* -------------------------------------------------------------------------
  * Overlay region -- matches ui/core/keyboard.h's own fixed footprint
