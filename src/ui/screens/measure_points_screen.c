@@ -361,6 +361,144 @@ static void on_export_activate(UiWidget *self, void *screen_ctx)
     ui_stack_push(ctx->stack, ctx->export_screen);
 }
 
+/* -------------------------------------------------------------------------
+ * Point list overlay
+ *
+ * Shows every captured point as a scrollable list covering the full
+ * panel width (same MP_OVERLAY_TOP_Y / MP_OVERLAY_HEIGHT region as the
+ * keyboard overlay). Each row shows "# <name>  <code>" on the left and
+ * a "Del" button on the right. Tapping Del removes that point from the
+ * in-memory store, rewrites points.csv on disk, and rebuilds the
+ * overlay in place so the list reflects the deletion immediately. The
+ * mini-map reads directly from ctx->points so the deleted dot
+ * disappears on the next render frame with no additional wiring.
+ *
+ * Widget identification for the delete callback: UiWidget carries only
+ * a const char* label (widget.h), no per-widget user-data field. To
+ * identify WHICH row's Del button was pressed inside on_delete_point(),
+ * each Del button's label is set to the corresponding entry of
+ * mp_list_del_labels[] -- a static per-row char array whose ADDRESS is
+ * unique per row. on_delete_point() scans mp_list_del_labels[i] pointer
+ * addresses to find i, then reads mp_list_delete_indices[i] for the
+ * actual store index. Both arrays are rebuilt on every overlay open /
+ * post-deletion rebuild, same "full rebuild, not incremental patch"
+ * pattern rebuild_grid() already uses for all other widget sets.
+ * ---------------------------------------------------------------------- */
+
+#define MP_LIST_ROW_H   30  /* height per row in the point list overlay */
+#define MP_LIST_GAP      3  /* vertical gap between rows */
+#define MP_LIST_MARGIN   8  /* left margin inside the overlay */
+#define MP_LIST_DEL_W   52  /* width of each "Del" button */
+#define MP_LIST_LABEL_W (800 - 2 * MP_LIST_MARGIN - MP_LIST_DEL_W - 6)
+
+/** Per-row display label text ("# <name>  <code>"), written into a
+ *  static buffer whose address doubles as the identification key for
+ *  the corresponding Del button (see on_delete_point()). */
+static char mp_list_row_labels[GM_MEASURE_POINTS_MAX][48];
+
+/** Per-row "Del" button label. Each entry holds the text "Del" with a
+ *  unique buffer ADDRESS per row -- on_delete_point() matches
+ *  self->label against mp_list_del_labels[i] addresses to recover i. */
+static char mp_list_del_labels[GM_MEASURE_POINTS_MAX][4]; /* "Del\0" */
+
+/** Parallel: store index corresponding to each Del button's row.
+ *  After a deletion the store shifts, so this is rebuilt on every
+ *  add_point_list_buttons() call. */
+static uint32_t mp_list_delete_indices[GM_MEASURE_POINTS_MAX];
+
+static void on_delete_point(UiWidget *self, void *screen_ctx)
+{
+    MeasurePointsScreenCtx *ctx = (MeasurePointsScreenCtx *)screen_ctx;
+
+    /* Identify which row was pressed by matching self->label (which
+     * points at one of the mp_list_del_labels[i] buffers) against each
+     * buffer's address -- unique per row by construction. */
+    uint32_t store_idx = ctx->points.count; /* sentinel: "not found" */
+    for (uint32_t i = 0; i < ctx->points.count; i++) {
+        if (self->label == mp_list_del_labels[i]) {
+            store_idx = mp_list_delete_indices[i];
+            break;
+        }
+    }
+
+    if (store_idx >= ctx->points.count) {
+        log_warn("on_delete_point: could not match Del button to a store index -- ignoring");
+        return;
+    }
+
+    if (measure_points_remove(&ctx->points, store_idx) != GM_OK)
+        return;
+
+    /* Update origin if the deleted point was the origin (index 0 before
+     * removal -- after removal index 0 is what was index 1, etc.). */
+    if (ctx->points.count == 0) {
+        ctx->have_origin = false;
+    } else if (store_idx == 0) {
+        ctx->origin_lat = ctx->points.points[0].lat;
+        ctx->origin_lon = ctx->points.points[0].lon;
+    }
+
+    /* Rewrite points.csv to keep disk and memory in sync. */
+    if (ctx->job_ctx && ctx->job_ctx->job_dir[0] != '\0') {
+        char csv_path[600];
+        measure_points_csv_path(ctx->job_ctx->job_dir, csv_path, sizeof(csv_path));
+        measure_points_rewrite_csv(csv_path, &ctx->points);
+    }
+
+    /* Rebuild the overlay in place so the list reflects the deletion. */
+    rebuild_grid(ctx);
+}
+
+static void add_point_list_buttons(MeasurePointsScreenCtx *ctx)
+{
+    ui_grid_set_scroll_region(&ctx->grid,
+        (UiRect){0, MP_OVERLAY_TOP_Y, 800, MP_OVERLAY_HEIGHT});
+
+    /* Start rows below the title banner drawn in measure_points_screen_
+     * _draw.c (title at MP_OVERLAY_TOP_Y+6, separator at +22, so
+     * first row starts at +28 to clear both). */
+    uint16_t y = (uint16_t)(MP_OVERLAY_TOP_Y + 28);
+
+    for (uint32_t i = 0; i < ctx->points.count; i++) {
+        const MeasurePoint *pt = &ctx->points.points[i];
+
+        /* Row display label: "#N  <name>  <code>", fits in 48 chars.
+         * Cap name/code at 15 each: "#" + up to 10 digit point_num +
+         * "  " + 15 + "  " + 15 + NUL = 46 bytes max, fits buffer. */
+        snprintf(mp_list_row_labels[i], sizeof(mp_list_row_labels[i]),
+                 "#%u  %.15s  %.15s",
+                 pt->point_num, pt->name, pt->code);
+
+        /* Del button label: "Del" written per-row so each has a unique
+         * buffer address on_delete_point() can use for identification. */
+        snprintf(mp_list_del_labels[i], sizeof(mp_list_del_labels[i]), "Del");
+        mp_list_delete_indices[i] = i;
+
+        UiRect label_r = { (uint16_t)MP_LIST_MARGIN, y,
+                           (uint16_t)MP_LIST_LABEL_W, (uint16_t)MP_LIST_ROW_H };
+        UiWidget *lbl = ui_grid_add_button(&ctx->grid, label_r,
+                                           mp_list_row_labels[i], NULL);
+        if (lbl) ui_widget_mark_scrollable(lbl);
+
+        uint16_t del_x = (uint16_t)(MP_LIST_MARGIN + MP_LIST_LABEL_W + 6);
+        UiRect del_r = { del_x, y,
+                         (uint16_t)MP_LIST_DEL_W, (uint16_t)MP_LIST_ROW_H };
+        UiWidget *del = ui_grid_add_button(&ctx->grid, del_r,
+                                           mp_list_del_labels[i], on_delete_point);
+        if (del) ui_widget_mark_scrollable(del);
+
+        y = (uint16_t)(y + MP_LIST_ROW_H + MP_LIST_GAP);
+    }
+}
+
+static void on_points_list_activate(UiWidget *self, void *screen_ctx)
+{
+    (void)self;
+    MeasurePointsScreenCtx *ctx = (MeasurePointsScreenCtx *)screen_ctx;
+    ctx->overlay = MEASURE_POINTS_OVERLAY_POINT_LIST;
+    rebuild_grid(ctx);
+}
+
 /**
  * See ui/core/widget.h's ui_grid_add_back_button() doc comment.
  * Dispatching UI_EVENT_BACK here (rather than popping directly) means a
@@ -414,6 +552,14 @@ static void add_base_widgets(MeasurePointsScreenCtx *ctx)
      * is open. Added by rebuild_grid() itself, conditionally. */
 }
 
+/* "Points" button layout -- occupies the same slot in add_base_widgets'
+ * geometry but is rendered separately from the Capture Point / Export
+ * buttons (those are only added in OVERLAY_NONE mode by rebuild_grid).
+ * Placed after Keyboard toggle so it is still present when no overlay
+ * is open; not added when an overlay is open (same convention as Export
+ * and Capture Point -- the base widgets with activation callbacks that
+ * could conflict with an open overlay are not in the grid). */
+
 static void rebuild_grid(MeasurePointsScreenCtx *ctx)
 {
     /* The grid has no "remove all widgets" operation (widget.h has no
@@ -441,6 +587,14 @@ static void rebuild_grid(MeasurePointsScreenCtx *ctx)
         add_code_picker_buttons(ctx);
         break;
 
+    case MEASURE_POINTS_OVERLAY_POINT_LIST:
+        /* Back button only -- the base fields are intentionally NOT
+         * added here (same reasoning as KEYBOARD/CODE_PICKER: the
+         * overlay owns the full focusable set while open). */
+        ui_grid_add_back_button(&ctx->grid, on_back);
+        add_point_list_buttons(ctx);
+        break;
+
     case MEASURE_POINTS_OVERLAY_NONE:
     default: {
         add_base_widgets(ctx);
@@ -452,6 +606,10 @@ static void rebuild_grid(MeasurePointsScreenCtx *ctx)
         UiRect export_r = { STATUS_PANEL_X + MP_FIELD_MARGIN, MP_EXPORT_Y,
                             MP_NAME_W, MP_EXPORT_H };
         ui_grid_add_button(&ctx->grid, export_r, "Export", on_export_activate);
+
+        UiRect pts_r = { STATUS_PANEL_X + MP_FIELD_MARGIN, MP_POINTS_LIST_Y,
+                         MP_NAME_W, MP_POINTS_LIST_H };
+        ui_grid_add_button(&ctx->grid, pts_r, "Points", on_points_list_activate);
         break;
     }
     }
@@ -584,7 +742,8 @@ static bool measure_points_on_event(void *raw_ctx, UiEvent ev)
          * through to the stack" precedent as e.g. a discard-changes
          * prompt would use (see screen_stack.h's own doc comment on
          * UI_EVENT_BACK), just simpler: there's nothing to confirm,
-         * just close the overlay. */
+         * just close the overlay. Covers all three overlay types
+         * (KEYBOARD, CODE_PICKER, POINT_LIST) uniformly. */
         if (ctx->overlay != MEASURE_POINTS_OVERLAY_NONE) {
             ctx->overlay = MEASURE_POINTS_OVERLAY_NONE;
             rebuild_grid(ctx);
