@@ -1,11 +1,13 @@
 /**
  * @file test_measure_points_export.c
- * @brief Tests for collector/measure_points_export.c -- LandXML and CSV
- *        export of a job's captured points. Pure host-testable module
- *        (no networking, no hardware), so unlike rtk_feed_client.c this
- *        gets a real automated suite -- see measure_points_export.h's
- *        own file doc comment for why this module exists separately
- *        from points.csv's internal round-trip format.
+ * @brief Tests for collector/measure_points_export.c (LandXML and PNEZD
+ *        CSV export) and the measure_points_remove()/rewrite_csv()
+ *        store-mutation functions added in the same session.
+ *
+ * All tests are pure host-testable (no networking, no hardware) --
+ * same "keep live OS state out of unit tests" convention this codebase
+ * applies throughout (see usb_export.h's file-level doc comment on
+ * why is_mounted() itself is not covered here).
  */
 
 #include <math.h>
@@ -21,18 +23,18 @@
 #include "util/units.h"
 
 /* =========================================================================
- * Minimal test harness (matches tests/test_coords.c / tests/test_widget.c)
+ * Minimal test harness
  * ========================================================================= */
 static int g_tests_run    = 0;
 static int g_tests_failed = 0;
 
 #define ASSERT(cond, msg)                                                     \
     do {                                                                      \
-        g_tests_run++;                                                       \
-        if (!(cond)) {                                                       \
-            fprintf(stderr, "FAIL [%s:%d] %s\n", __FILE__, __LINE__, (msg));  \
-            g_tests_failed++;                                                \
-        }                                                                    \
+        g_tests_run++;                                                        \
+        if (!(cond)) {                                                        \
+            fprintf(stderr, "FAIL [%s:%d] %s\n", __FILE__, __LINE__, (msg)); \
+            g_tests_failed++;                                                 \
+        }                                                                     \
     } while (0)
 
 #define NEAR(a, b, tol) (fabs((a) - (b)) < (tol))
@@ -41,8 +43,6 @@ static int g_tests_failed = 0;
  * Helpers
  * ========================================================================= */
 
-/** Reads the whole file at path into buf (NUL-terminated), returns
- *  false if it cannot be opened or is too large for buf. */
 static bool slurp_file(const char *path, char *buf, size_t buf_len)
 {
     FILE *f = fopen(path, "r");
@@ -54,8 +54,8 @@ static bool slurp_file(const char *path, char *buf, size_t buf_len)
     return true;
 }
 
-static void make_point(MeasurePoint *pt, double lat, double lon, double alt, const char *name,
-                       const char *code)
+static void make_point(MeasurePoint *pt, double lat, double lon, double alt,
+                       const char *name, const char *code)
 {
     memset(pt, 0, sizeof(*pt));
     pt->lat = lat;
@@ -66,24 +66,15 @@ static void make_point(MeasurePoint *pt, double lat, double lon, double alt, con
     strncpy(pt->code, code, sizeof(pt->code) - 1);
 }
 
-/** Test job/export directories live under /tmp -- removed and
- *  recreated by each test that needs a fresh one, same throwaway-
- *  fixture convention test_job_metadata.c already uses for its own
- *  /tmp paths. */
 #define TEST_JOB_DIR "/tmp/geomark_export_test_job"
 
 static void cleanup_test_job_dir(void)
 {
-    /* Best-effort cleanup -- order matters (files before directories),
-     * ignored failures are fine since each test overwrites/recreates
-     * what it needs anyway. */
     char path[768];
-    snprintf(path, sizeof(path), "%s/export/points.xml", TEST_JOB_DIR);
-    unlink(path);
-    snprintf(path, sizeof(path), "%s/export/points_export.csv", TEST_JOB_DIR);
-    unlink(path);
-    snprintf(path, sizeof(path), "%s/export", TEST_JOB_DIR);
-    rmdir(path);
+    snprintf(path, sizeof(path), "%s/export/points.xml",        TEST_JOB_DIR); unlink(path);
+    snprintf(path, sizeof(path), "%s/export/points_pnezd.csv",  TEST_JOB_DIR); unlink(path);
+    snprintf(path, sizeof(path), "%s/points.csv",               TEST_JOB_DIR); unlink(path);
+    snprintf(path, sizeof(path), "%s/export",                   TEST_JOB_DIR); rmdir(path);
     rmdir(TEST_JOB_DIR);
 }
 
@@ -95,21 +86,23 @@ static void test_path_helpers(void)
 {
     char buf[768];
 
-    measure_points_export_landxml_path("/home/alex/geomark-data/projects/p/j", buf, sizeof(buf));
+    measure_points_export_landxml_path(
+        "/home/alex/geomark-data/projects/p/j", buf, sizeof(buf));
     ASSERT(strcmp(buf, "/home/alex/geomark-data/projects/p/j/export/points.xml") == 0,
           "LandXML export path is job_dir/export/points.xml");
 
-    measure_points_export_csv_path("/home/alex/geomark-data/projects/p/j", buf, sizeof(buf));
-    ASSERT(strcmp(buf, "/home/alex/geomark-data/projects/p/j/export/points_export.csv") == 0,
-          "CSV export path is job_dir/export/points_export.csv");
+    measure_points_export_pnezd_path(
+        "/home/alex/geomark-data/projects/p/j", buf, sizeof(buf));
+    ASSERT(strcmp(buf,
+                  "/home/alex/geomark-data/projects/p/j/export/points_pnezd.csv") == 0,
+          "PNEZD export path is job_dir/export/points_pnezd.csv");
 
-    /* Distinct from points.csv's own internal path -- see this
-     * module's file doc comment on why the two must never collide. */
+    /* Both export paths are distinct from the internal points.csv path. */
     char internal_buf[768];
-    measure_points_csv_path("/home/alex/geomark-data/projects/p/j", internal_buf,
-                            sizeof(internal_buf));
+    measure_points_csv_path("/home/alex/geomark-data/projects/p/j",
+                            internal_buf, sizeof(internal_buf));
     ASSERT(strcmp(buf, internal_buf) != 0,
-          "Export CSV path is distinct from the internal points.csv path");
+          "PNEZD export path is distinct from the internal points.csv path");
 }
 
 /* =========================================================================
@@ -123,27 +116,28 @@ static void test_null_guards(void)
     MeasurePointStore store;
     measure_points_init(&store);
 
-    gm_status_t rc = measure_points_export_landxml("/tmp/unused.xml", NULL, &meta, 0.0, 0.0);
-    ASSERT(rc == GM_ERR_GENERIC, "LandXML export with NULL store returns GM_ERR_GENERIC");
-
-    rc = measure_points_export_landxml("/tmp/unused.xml", &store, NULL, 0.0, 0.0);
-    ASSERT(rc == GM_ERR_GENERIC, "LandXML export with NULL job_meta returns GM_ERR_GENERIC");
-
-    rc = measure_points_export_csv("/tmp/unused.csv", NULL, &meta, 0.0, 0.0);
-    ASSERT(rc == GM_ERR_GENERIC, "CSV export with NULL store returns GM_ERR_GENERIC");
-
-    rc = measure_points_export_csv("/tmp/unused.csv", &store, NULL, 0.0, 0.0);
-    ASSERT(rc == GM_ERR_GENERIC, "CSV export with NULL job_meta returns GM_ERR_GENERIC");
+    ASSERT(measure_points_export_landxml("/tmp/unused.xml", NULL, &meta, 0.0, 0.0)
+               == GM_ERR_GENERIC,
+          "LandXML export: NULL store -> GM_ERR_GENERIC");
+    ASSERT(measure_points_export_landxml("/tmp/unused.xml", &store, NULL, 0.0, 0.0)
+               == GM_ERR_GENERIC,
+          "LandXML export: NULL job_meta -> GM_ERR_GENERIC");
+    ASSERT(measure_points_export_pnezd("/tmp/unused.csv", NULL, &meta, 0.0, 0.0)
+               == GM_ERR_GENERIC,
+          "PNEZD export: NULL store -> GM_ERR_GENERIC");
+    ASSERT(measure_points_export_pnezd("/tmp/unused.csv", &store, NULL, 0.0, 0.0)
+               == GM_ERR_GENERIC,
+          "PNEZD export: NULL job_meta -> GM_ERR_GENERIC");
 }
 
 /* =========================================================================
- * Directory auto-creation
+ * Export directory auto-creation
  * ========================================================================= */
 
 static void test_creates_export_dir(void)
 {
     cleanup_test_job_dir();
-    mkdir(TEST_JOB_DIR, 0755); /* job_dir itself -- export/ must not exist yet */
+    mkdir(TEST_JOB_DIR, 0755);
 
     struct stat st;
     ASSERT(stat(TEST_JOB_DIR "/export", &st) != 0,
@@ -155,21 +149,20 @@ static void test_creates_export_dir(void)
     measure_points_init(&store);
 
     char path[768];
-    measure_points_export_csv_path(TEST_JOB_DIR, path, sizeof(path));
-    gm_status_t rc = measure_points_export_csv(path, &store, &meta, 0.0, 0.0);
-
-    ASSERT(rc == GM_OK, "CSV export succeeds when export/ must be created first");
-    ASSERT(stat(TEST_JOB_DIR "/export", &st) == 0,
-          "export/ subdirectory is created by the export call");
+    measure_points_export_pnezd_path(TEST_JOB_DIR, path, sizeof(path));
+    ASSERT(measure_points_export_pnezd(path, &store, &meta, 0.0, 0.0) == GM_OK,
+          "PNEZD export succeeds and creates export/ in one call");
+    ASSERT(stat(TEST_JOB_DIR "/export", &st) == 0 && S_ISDIR(st.st_mode),
+          "export/ subdirectory exists after the export call");
 
     cleanup_test_job_dir();
 }
 
 /* =========================================================================
- * Empty store -- "nothing captured yet" is not an error
+ * Empty store -- not an error
  * ========================================================================= */
 
-static void test_empty_store_csv(void)
+static void test_empty_store_pnezd(void)
 {
     cleanup_test_job_dir();
     mkdir(TEST_JOB_DIR, 0755);
@@ -180,14 +173,15 @@ static void test_empty_store_csv(void)
     measure_points_init(&store);
 
     char path[768];
-    measure_points_export_csv_path(TEST_JOB_DIR, path, sizeof(path));
-    gm_status_t rc = measure_points_export_csv(path, &store, &meta, 0.0, 0.0);
-    ASSERT(rc == GM_OK, "CSV export of an empty store succeeds");
+    measure_points_export_pnezd_path(TEST_JOB_DIR, path, sizeof(path));
+    ASSERT(measure_points_export_pnezd(path, &store, &meta, 0.0, 0.0) == GM_OK,
+          "PNEZD export of empty store succeeds");
 
-    char content[2048];
-    ASSERT(slurp_file(path, content, sizeof(content)), "Empty-store CSV file can be read back");
-    ASSERT(strcmp(content, "Point name,Code,Northing,Easting,Elevation\n") == 0,
-          "Empty-store CSV contains only the header row");
+    char content[256];
+    ASSERT(slurp_file(path, content, sizeof(content)), "Empty-store PNEZD file is readable");
+    ASSERT(content[0] == '\0',
+          "Empty-store PNEZD is a completely empty file (no header row -- Civil 3D "
+          "PNEZD format has no header)");
 
     cleanup_test_job_dir();
 }
@@ -204,15 +198,15 @@ static void test_empty_store_landxml(void)
 
     char path[768];
     measure_points_export_landxml_path(TEST_JOB_DIR, path, sizeof(path));
-    gm_status_t rc = measure_points_export_landxml(path, &store, &meta, 0.0, 0.0);
-    ASSERT(rc == GM_OK, "LandXML export of an empty store succeeds");
+    ASSERT(measure_points_export_landxml(path, &store, &meta, 0.0, 0.0) == GM_OK,
+          "LandXML export of empty store succeeds");
 
     char content[2048];
-    ASSERT(slurp_file(path, content, sizeof(content)), "Empty-store LandXML file can be read back");
-    ASSERT(strstr(content, "<CgPoints>") != NULL && strstr(content, "</CgPoints>") != NULL,
-          "Empty-store LandXML still contains a valid CgPoints collection");
+    ASSERT(slurp_file(path, content, sizeof(content)), "Empty-store LandXML is readable");
+    ASSERT(strstr(content, "<CgPoints>") && strstr(content, "</CgPoints>"),
+          "Empty-store LandXML still has a valid CgPoints element");
     ASSERT(strstr(content, "<CgPoint ") == NULL,
-          "Empty-store LandXML contains zero CgPoint entries");
+          "Empty-store LandXML has zero CgPoint entries");
     ASSERT(strstr(content, "<?xml version=\"1.0\"") != NULL,
           "LandXML output starts with a valid XML declaration");
 
@@ -220,12 +214,14 @@ static void test_empty_store_landxml(void)
 }
 
 /* =========================================================================
- * ND North coord_sys -- output already in International Foot, must
- * NOT be re-converted (the bug this module's own header doc comment
- * explicitly calls out as the thing to avoid).
+ * PNEZD column order: Point#, Northing, Easting, Elevation, Description
+ *
+ * This is the only column order Civil 3D's native PNEZD importer
+ * accepts. Verified against the ND North reference coordinates
+ * test_coords.c independently confirms.
  * ========================================================================= */
 
-static void test_nd_north_csv_values(void)
+static void test_pnezd_nd_north_column_order_and_values(void)
 {
     cleanup_test_job_dir();
     mkdir(TEST_JOB_DIR, 0755);
@@ -233,59 +229,83 @@ static void test_nd_north_csv_values(void)
     gm_job_metadata_t meta;
     job_metadata_defaults(&meta);
     meta.coord_sys = GM_COORD_SYS_ND_NORTH;
-    job_metadata_coerce_units(&meta); /* forces dist_unit -> INTL_FOOT */
-    ASSERT(meta.dist_unit == GM_DIST_UNIT_INTL_FOOT,
-          "job_metadata_coerce_units forces International Foot for ND North");
+    job_metadata_coerce_units(&meta);
 
     MeasurePointStore store;
     measure_points_init(&store);
     MeasurePoint pt;
-    /* Same reference point test_coords.c already verifies independently:
-     * lat=46.8083, lon=-100.7837 -> easting_ft=1897447.454977,
-     * northing_ft=-69797.606374. alt=10.0 m -> 32.8084 ft. */
+    /* Reference: lat=46.8083, lon=-100.7837 -> N=-69797.606374,
+     * E=1897447.454977 (ft, EPSG:2265). alt=10.0m -> 32.8084 ft. */
     make_point(&pt, 46.8083, -100.7837, 10.0, "1", "CP");
     measure_points_add(&store, pt);
 
     char path[768];
-    measure_points_export_csv_path(TEST_JOB_DIR, path, sizeof(path));
-    gm_status_t rc = measure_points_export_csv(path, &store, &meta, 0.0, 0.0);
-    ASSERT(rc == GM_OK, "ND North CSV export succeeds");
+    measure_points_export_pnezd_path(TEST_JOB_DIR, path, sizeof(path));
+    ASSERT(measure_points_export_pnezd(path, &store, &meta, 0.0, 0.0) == GM_OK,
+          "PNEZD ND North export succeeds");
 
     char content[2048];
-    ASSERT(slurp_file(path, content, sizeof(content)), "ND North CSV file can be read back");
+    ASSERT(slurp_file(path, content, sizeof(content)), "PNEZD ND North file is readable");
 
-    /* Parse the one data row back out -- second line, after the header. */
-    char *data_row = strchr(content, '\n');
-    ASSERT(data_row != NULL, "ND North CSV has a header row followed by a newline");
-    if (data_row) {
-        data_row++; /* skip past the header's own newline */
-        char name[64], code[64];
-        double northing, easting, elev;
-        int n = sscanf(data_row, "%63[^,],%63[^,],%lf,%lf,%lf", name, code, &northing, &easting,
-                       &elev);
-        ASSERT(n == 5, "ND North CSV data row parses as name,code,northing,easting,elevation");
-        if (n == 5) {
-            ASSERT(NEAR(northing, -69797.606374, 0.01),
-                  "ND North CSV northing matches the verified EPSG:2265 reference value "
-                  "(NOT double-converted)");
-            ASSERT(NEAR(easting, 1897447.454977, 0.01),
-                  "ND North CSV easting matches the verified EPSG:2265 reference value "
-                  "(NOT double-converted)");
-            ASSERT(NEAR(elev, 32.8084, 0.01),
-                  "ND North CSV elevation is alt converted to International Foot");
-        }
-    }
+    /* No header: first line IS the data row. */
+    unsigned point_num;
+    double northing, easting, elev;
+    char desc[64];
+    int n = sscanf(content, "%u,%lf,%lf,%lf,%63s",
+                   &point_num, &northing, &easting, &elev, desc);
+    ASSERT(n == 5, "PNEZD ND North row parses as 5 columns: PNUM,N,E,Z,DESC");
+    ASSERT(point_num == 1,          "PNEZD column 1 is point number");
+    ASSERT(NEAR(northing, -69797.606374,  0.01),
+          "PNEZD column 2 is northing (not easting) in feet");
+    ASSERT(NEAR(easting,  1897447.454977, 0.01),
+          "PNEZD column 3 is easting in feet");
+    ASSERT(NEAR(elev, 32.8084, 0.01),
+          "PNEZD column 4 is elevation in feet");
+    ASSERT(strstr(desc, "CP") != NULL,
+          "PNEZD column 5 is Description (point code)");
+
+    cleanup_test_job_dir();
+}
+
+static void test_pnezd_no_header_row(void)
+{
+    cleanup_test_job_dir();
+    mkdir(TEST_JOB_DIR, 0755);
+
+    gm_job_metadata_t meta;
+    job_metadata_defaults(&meta);
+    meta.coord_sys = GM_COORD_SYS_ND_NORTH;
+    job_metadata_coerce_units(&meta);
+
+    MeasurePointStore store;
+    measure_points_init(&store);
+    MeasurePoint pt;
+    make_point(&pt, 46.8083, -100.7837, 10.0, "1", "BM");
+    measure_points_add(&store, pt);
+
+    char path[768];
+    measure_points_export_pnezd_path(TEST_JOB_DIR, path, sizeof(path));
+    measure_points_export_pnezd(path, &store, &meta, 0.0, 0.0);
+
+    char content[2048];
+    slurp_file(path, content, sizeof(content));
+
+    /* If there were a header the first token would be non-numeric text.
+     * A pure PNEZD data row starts with the point number (an integer). */
+    unsigned first_val = 0;
+    int scanned = sscanf(content, "%u,", &first_val);
+    ASSERT(scanned == 1 && first_val == 1,
+          "PNEZD file first line starts with the point number (no header row)");
 
     cleanup_test_job_dir();
 }
 
 /* =========================================================================
- * Local-fallback coord_sys (WGS84/UTM/Local Ground) -- output IS in
- * metres from measure_points_project() and MUST be converted to the
- * job's chosen dist_unit.
+ * Imperial units -- verify the local-fallback (non-ND-North) path also
+ * converts metres to feet, NOT passes raw metres through.
  * ========================================================================= */
 
-static void test_local_fallback_unit_conversion(void)
+static void test_pnezd_local_fallback_imperial(void)
 {
     cleanup_test_job_dir();
     mkdir(TEST_JOB_DIR, 0755);
@@ -297,57 +317,128 @@ static void test_local_fallback_unit_conversion(void)
 
     MeasurePointStore store;
     measure_points_init(&store);
-    MeasurePoint origin_pt, second_pt;
+    MeasurePoint origin_pt, offset_pt;
     make_point(&origin_pt, 47.0, -97.0, 100.0, "1", "CP");
-    /* ~0.0001 deg north of origin -- small enough to stay in the
-     * equirectangular fallback's accurate range, large enough to
-     * produce a clearly nonzero northing. */
-    make_point(&second_pt, 47.0001, -97.0, 100.0, "2", "TP");
+    make_point(&offset_pt, 47.0001, -97.0, 100.0, "2", "TP");
     measure_points_add(&store, origin_pt);
-    measure_points_add(&store, second_pt);
+    measure_points_add(&store, offset_pt);
 
-    /* Independently compute the expected metres -> US Survey Foot
-     * value via measure_points_project() + gm_m_to_survey_ft(), the
-     * exact same two calls the module under test makes internally --
-     * this proves the module applies that conversion rather than
-     * either skipping it or double-applying the ND North path's
-     * "already feet" shortcut to a value that is actually metres. */
+    /* Independently compute expected values. */
     MeasurePointsProjected proj;
-    measure_points_project(&meta, second_pt.lat, second_pt.lon, origin_pt.lat, origin_pt.lon,
-                           &proj);
-    double expected_northing_ft = gm_m_to_survey_ft(proj.north);
+    measure_points_project(&meta, offset_pt.lat, offset_pt.lon,
+                           origin_pt.lat, origin_pt.lon, &proj);
+    double expected_n_ft = gm_m_to_survey_ft(proj.north);
+    double expected_e_ft = gm_m_to_survey_ft(proj.east);
+    double expected_z_ft = gm_m_to_intl_ft(100.0);
+
+    /* The raw metre values from measure_points_project() are ~11.13m
+     * northing for 0.0001 deg at ~47 deg N. In feet that's ~36.5 ft.
+     * If the export were passing raw metres, we would see ~11 -- check
+     * that exported values match feet, not metres. */
+    ASSERT(expected_n_ft > 30.0,
+          "Test precondition: expected northing is clearly >30 ft (would be ~11 in metres)");
 
     char path[768];
-    measure_points_export_csv_path(TEST_JOB_DIR, path, sizeof(path));
-    gm_status_t rc =
-        measure_points_export_csv(path, &store, &meta, origin_pt.lat, origin_pt.lon);
-    ASSERT(rc == GM_OK, "Local-fallback CSV export succeeds");
+    measure_points_export_pnezd_path(TEST_JOB_DIR, path, sizeof(path));
+    ASSERT(measure_points_export_pnezd(path, &store, &meta, origin_pt.lat, origin_pt.lon)
+               == GM_OK,
+          "Local-fallback PNEZD export succeeds");
 
     char content[2048];
     slurp_file(path, content, sizeof(content));
 
-    /* Second data row (point "2") is what carries the nonzero offset. */
-    char *row1 = strchr(content, '\n');
-    char *row2 = row1 ? strchr(row1 + 1, '\n') : NULL;
-    ASSERT(row2 != NULL, "Local-fallback CSV has a header row plus two data rows");
+    /* Read the second data row (offset point). */
+    char *row2 = strchr(content, '\n');
+    ASSERT(row2 != NULL, "PNEZD file has at least two rows");
     if (row2) {
         row2++;
-        char name[64], code[64];
-        double northing, easting, elev;
-        sscanf(row2, "%63[^,],%63[^,],%lf,%lf,%lf", name, code, &northing, &easting, &elev);
-        ASSERT(NEAR(northing, expected_northing_ft, 0.01),
-              "Local-fallback northing is converted metres->US Survey Foot, "
-              "matching an independent computation of the same conversion");
-        ASSERT(NEAR(elev, gm_m_to_intl_ft(100.0), 0.01),
-              "Local-fallback elevation is always converted to International Foot "
-              "even though dist_unit is US Survey Foot");
+        unsigned pnum;
+        double n, e, z;
+        char desc[32];
+        sscanf(row2, "%u,%lf,%lf,%lf,%31s", &pnum, &n, &e, &z, desc);
+        ASSERT(NEAR(n, expected_n_ft, 0.01),
+              "Local-fallback PNEZD northing is in feet (US Survey), not raw metres");
+        ASSERT(NEAR(e, expected_e_ft, 0.01),
+              "Local-fallback PNEZD easting is in feet (US Survey), not raw metres");
+        ASSERT(NEAR(z, expected_z_ft, 0.01),
+              "Local-fallback PNEZD elevation is always International Foot");
     }
 
     cleanup_test_job_dir();
 }
 
 /* =========================================================================
- * LandXML content -- name/code attributes, coordinate order, escaping
+ * Formula injection safety -- codes starting with +/-/=/@
+ *
+ * Reproduces the exact bug Alex reported: "+CONC" exported as "+CONC"
+ * opens in Excel as a formula ("=-CONC" after autocorrect), producing
+ * #NAME?. The fix: prefix a space inside a quoted field.
+ * ========================================================================= */
+
+static void test_pnezd_formula_injection_safety(void)
+{
+    cleanup_test_job_dir();
+    mkdir(TEST_JOB_DIR, 0755);
+
+    gm_job_metadata_t meta;
+    job_metadata_defaults(&meta);
+    meta.coord_sys = GM_COORD_SYS_ND_NORTH;
+    job_metadata_coerce_units(&meta);
+
+    MeasurePointStore store;
+    measure_points_init(&store);
+
+    /* The four trigger characters: '+', '-', '=', '@'. */
+    MeasurePoint pt;
+    make_point(&pt, 46.8083, -100.7837, 10.0, "1", "+CONC");
+    measure_points_add(&store, pt);
+    make_point(&pt, 46.8083, -100.7837, 10.0, "2", "-RCPF");
+    measure_points_add(&store, pt);
+    make_point(&pt, 46.8083, -100.7837, 10.0, "3", "=SUM(1,2)");
+    measure_points_add(&store, pt);
+    make_point(&pt, 46.8083, -100.7837, 10.0, "4", "@LABEL");
+    measure_points_add(&store, pt);
+    /* A normal code must NOT be quoted (no overhead for the common case). */
+    make_point(&pt, 46.8083, -100.7837, 10.0, "5", "CONC");
+    measure_points_add(&store, pt);
+
+    char path[768];
+    measure_points_export_pnezd_path(TEST_JOB_DIR, path, sizeof(path));
+    ASSERT(measure_points_export_pnezd(path, &store, &meta, 0.0, 0.0) == GM_OK,
+          "PNEZD export with formula-trigger codes succeeds");
+
+    char content[4096];
+    slurp_file(path, content, sizeof(content));
+
+    /* Each injection-trigger code must appear inside a quoted field with
+     * a leading space, e.g.: ," +CONC"\n */
+    ASSERT(strstr(content, "\" +CONC\"") != NULL,
+          "'+CONC' is written as '\" +CONC\"' (quoted with space prefix) in PNEZD");
+    ASSERT(strstr(content, "\" -RCPF\"") != NULL,
+          "'-RCPF' is written as '\" -RCPF\"' (quoted with space prefix) in PNEZD");
+    ASSERT(strstr(content, "\" =SUM(1,2)\"") != NULL,
+          "'=SUM(1,2)' is written quoted with space prefix in PNEZD");
+    ASSERT(strstr(content, "\" @LABEL\"") != NULL,
+          "'@LABEL' is written quoted with space prefix in PNEZD");
+
+    /* The plain code must NOT be wrapped in quotes. */
+    ASSERT(strstr(content, "\"CONC\"") == NULL,
+          "Normal code 'CONC' is NOT quoted -- no overhead for safe codes");
+    ASSERT(strstr(content, ",CONC\n") != NULL,
+          "Normal code 'CONC' appears bare, comma-separated, in the output");
+
+    /* None of the trigger codes should appear UNQUOTED (which would
+     * trigger formula evaluation in Excel). */
+    ASSERT(strstr(content, ",+CONC") == NULL,
+          "'+CONC' never appears unquoted after a comma");
+    ASSERT(strstr(content, ",-RCPF") == NULL,
+          "'-RCPF' never appears unquoted after a comma");
+
+    cleanup_test_job_dir();
+}
+
+/* =========================================================================
+ * LandXML content -- attribute escaping, N/E/Z order, imperial values
  * ========================================================================= */
 
 static void test_landxml_point_content(void)
@@ -368,50 +459,46 @@ static void test_landxml_point_content(void)
 
     char path[768];
     measure_points_export_landxml_path(TEST_JOB_DIR, path, sizeof(path));
-    gm_status_t rc = measure_points_export_landxml(path, &store, &meta, 0.0, 0.0);
-    ASSERT(rc == GM_OK, "LandXML export with one point succeeds");
+    ASSERT(measure_points_export_landxml(path, &store, &meta, 0.0, 0.0) == GM_OK,
+          "LandXML export with one point succeeds");
 
     char content[4096];
     slurp_file(path, content, sizeof(content));
 
     ASSERT(strstr(content, "name=\"BM &quot;A&quot;\"") != NULL,
-          "LandXML escapes a double-quote character in the point name");
+          "LandXML escapes double-quote in point name");
     ASSERT(strstr(content, "code=\"EP&amp;PIPE\"") != NULL,
-          "LandXML escapes an ampersand in the point code");
+          "LandXML escapes ampersand in point code");
 
-    /* Coordinate text content must appear in northing-easting-elevation
-     * order per the LandXML schema convention. */
+    /* Coordinate order: Northing Easting Elevation (LandXML PointType). */
     char *cgpoint = strstr(content, "<CgPoint ");
-    ASSERT(cgpoint != NULL, "LandXML contains exactly one CgPoint entry for the one point");
+    ASSERT(cgpoint != NULL, "LandXML output contains a CgPoint element");
     if (cgpoint) {
         char *gt = strchr(cgpoint, '>');
-        ASSERT(gt != NULL, "CgPoint open tag is well-formed");
+        ASSERT(gt != NULL, "CgPoint tag is well-formed");
         if (gt) {
             double n, e, el;
-            int n_parsed = sscanf(gt + 1, "%lf %lf %lf", &n, &el, &e); /* placeholder read */
-            (void)n_parsed;
-            /* Re-read correctly as northing, easting, elevation. */
             sscanf(gt + 1, "%lf %lf %lf", &n, &e, &el);
-            ASSERT(NEAR(n, -69797.606374, 0.01), "First coordinate value is northing");
-            ASSERT(NEAR(e, 1897447.454977, 0.01), "Second coordinate value is easting");
-            ASSERT(NEAR(el, 32.8084, 0.01), "Third coordinate value is elevation in feet");
+            ASSERT(NEAR(n,  -69797.606374,  0.01), "LandXML coord[0] is northing (feet)");
+            ASSERT(NEAR(e,  1897447.454977, 0.01), "LandXML coord[1] is easting (feet)");
+            ASSERT(NEAR(el, 32.8084,        0.01), "LandXML coord[2] is elevation (feet)");
         }
     }
+
+    /* Units element must declare Imperial/foot. */
+    ASSERT(strstr(content, "linearUnit=\"foot\"") != NULL ||
+           strstr(content, "linearUnit=\"USSurveyFoot\"") != NULL,
+          "LandXML <Units> declares a foot-based linear unit");
 
     cleanup_test_job_dir();
 }
 
 /* =========================================================================
- * XML well-formedness regression -- comments must never contain "--"
+ * LandXML comment must not contain "--" (illegal per XML spec)
  * ========================================================================= */
 
 static void test_landxml_no_illegal_comment_sequence(void)
 {
-    /* XML comments may never contain "--" anywhere in their body --
-     * this is illegal per the XML spec (a doc-writing convention this
-     * codebase otherwise uses constantly, "foo -- bar", must NOT leak
-     * into the one comment this module emits). Regression check for
-     * exactly that bug. */
     cleanup_test_job_dir();
     mkdir(TEST_JOB_DIR, 0755);
 
@@ -429,44 +516,224 @@ static void test_landxml_no_illegal_comment_sequence(void)
 
     char *comment_start = strstr(content, "<!--");
     char *comment_end   = comment_start ? strstr(comment_start, "-->") : NULL;
-    ASSERT(comment_start != NULL && comment_end != NULL,
-          "LandXML output contains exactly one recognizable comment");
+    ASSERT(comment_start && comment_end,
+          "LandXML output contains a recognizable comment");
     if (comment_start && comment_end) {
         bool found_double_hyphen = false;
         for (char *p = comment_start + 4; p < comment_end - 1; p++) {
-            if (p[0] == '-' && p[1] == '-') {
-                found_double_hyphen = true;
-                break;
-            }
+            if (p[0] == '-' && p[1] == '-') { found_double_hyphen = true; break; }
         }
         ASSERT(!found_double_hyphen,
-              "LandXML comment body contains no '--' sequence (illegal per XML spec)");
+              "LandXML comment body contains no '--' (illegal per XML spec)");
     }
 
     cleanup_test_job_dir();
 }
 
 /* =========================================================================
+ * measure_points_remove() -- in-memory store manipulation
+ * ========================================================================= */
+
+static void test_remove_from_middle(void)
+{
+    MeasurePointStore store;
+    measure_points_init(&store);
+
+    MeasurePoint pt;
+    make_point(&pt, 46.0, -97.0, 100.0, "1", "CP"); measure_points_add(&store, pt);
+    make_point(&pt, 46.1, -97.1, 101.0, "2", "TP"); measure_points_add(&store, pt);
+    make_point(&pt, 46.2, -97.2, 102.0, "3", "BM"); measure_points_add(&store, pt);
+
+    /* Remove the middle point (store index 1). */
+    ASSERT(measure_points_remove(&store, 1) == GM_OK,
+          "remove at valid middle index returns GM_OK");
+    ASSERT(store.count == 2, "store count decremented after remove");
+
+    /* Point 1 (name "1") and point 3 (name "3") remain; their
+     * point_nums are preserved, not renumbered. */
+    ASSERT(store.points[0].point_num == 1, "first remaining point keeps its original point_num");
+    ASSERT(store.points[1].point_num == 3, "second remaining point keeps its original point_num");
+    ASSERT(strcmp(store.points[0].name, "1") == 0, "first remaining point is original point 1");
+    ASSERT(strcmp(store.points[1].name, "3") == 0, "second remaining point is original point 3");
+}
+
+static void test_remove_last_element(void)
+{
+    MeasurePointStore store;
+    measure_points_init(&store);
+
+    MeasurePoint pt;
+    make_point(&pt, 46.0, -97.0, 100.0, "1", "A"); measure_points_add(&store, pt);
+    make_point(&pt, 46.1, -97.1, 101.0, "2", "B"); measure_points_add(&store, pt);
+
+    ASSERT(measure_points_remove(&store, 1) == GM_OK,
+          "remove at last valid index (count-1) returns GM_OK");
+    ASSERT(store.count == 1, "store count decremented correctly");
+    ASSERT(strcmp(store.points[0].name, "1") == 0, "remaining point is the original first point");
+}
+
+static void test_remove_only_element(void)
+{
+    MeasurePointStore store;
+    measure_points_init(&store);
+
+    MeasurePoint pt;
+    make_point(&pt, 46.0, -97.0, 100.0, "1", "X"); measure_points_add(&store, pt);
+
+    ASSERT(measure_points_remove(&store, 0) == GM_OK,
+          "remove from a one-element store returns GM_OK");
+    ASSERT(store.count == 0, "store is empty after removing the only element");
+}
+
+static void test_remove_out_of_range(void)
+{
+    MeasurePointStore store;
+    measure_points_init(&store);
+
+    MeasurePoint pt;
+    make_point(&pt, 46.0, -97.0, 100.0, "1", "CP"); measure_points_add(&store, pt);
+
+    ASSERT(measure_points_remove(&store, 1) == GM_ERR_GENERIC,
+          "remove at index == count returns GM_ERR_GENERIC (out of range)");
+    ASSERT(measure_points_remove(&store, 99) == GM_ERR_GENERIC,
+          "remove at large out-of-range index returns GM_ERR_GENERIC");
+    ASSERT(store.count == 1, "store unchanged after failed remove attempts");
+}
+
+static void test_remove_null_store(void)
+{
+    ASSERT(measure_points_remove(NULL, 0) == GM_ERR_GENERIC,
+          "remove with NULL store returns GM_ERR_GENERIC");
+}
+
+/* =========================================================================
+ * measure_points_rewrite_csv() -- on-disk state after remove
+ * ========================================================================= */
+
+static void test_rewrite_csv_after_remove(void)
+{
+    cleanup_test_job_dir();
+    mkdir(TEST_JOB_DIR, 0755);
+
+    /* Build an initial CSV with three points via append (the normal
+     * capture path), then remove the middle and rewrite, then reload
+     * and confirm the on-disk state matches the in-memory state. */
+    MeasurePointStore store;
+    measure_points_init(&store);
+
+    char csv_path[600];
+    measure_points_csv_path(TEST_JOB_DIR, csv_path, sizeof(csv_path));
+
+    MeasurePoint pt;
+    make_point(&pt, 46.0, -97.0, 100.0, "1", "CP"); measure_points_add(&store, pt);
+    measure_points_append_csv(csv_path, &store.points[0]);
+    make_point(&pt, 46.1, -97.1, 101.0, "2", "TP"); measure_points_add(&store, pt);
+    measure_points_append_csv(csv_path, &store.points[1]);
+    make_point(&pt, 46.2, -97.2, 102.0, "3", "BM"); measure_points_add(&store, pt);
+    measure_points_append_csv(csv_path, &store.points[2]);
+
+    ASSERT(store.count == 3, "three points in store before remove");
+
+    /* Remove middle point (store index 1, original point_num 2). */
+    measure_points_remove(&store, 1);
+    ASSERT(store.count == 2, "two points in store after remove");
+
+    /* Rewrite CSV. */
+    ASSERT(measure_points_rewrite_csv(csv_path, &store) == GM_OK,
+          "rewrite_csv after remove succeeds");
+
+    /* Reload into a fresh store and verify. */
+    MeasurePointStore reloaded;
+    ASSERT(measure_points_load_csv(csv_path, &reloaded) == GM_OK,
+          "reloaded CSV after rewrite is valid");
+    ASSERT(reloaded.count == 2, "reloaded store has two points");
+    ASSERT(reloaded.points[0].point_num == 1, "reloaded point 0 has original point_num 1");
+    ASSERT(reloaded.points[1].point_num == 3, "reloaded point 1 has original point_num 3");
+    ASSERT(strcmp(reloaded.points[0].name, "1") == 0, "reloaded point 0 name is '1'");
+    ASSERT(strcmp(reloaded.points[1].name, "3") == 0, "reloaded point 1 name is '3'");
+
+    cleanup_test_job_dir();
+}
+
+static void test_rewrite_csv_empty_store(void)
+{
+    cleanup_test_job_dir();
+    mkdir(TEST_JOB_DIR, 0755);
+
+    MeasurePointStore store;
+    measure_points_init(&store);
+
+    char csv_path[600];
+    measure_points_csv_path(TEST_JOB_DIR, csv_path, sizeof(csv_path));
+
+    ASSERT(measure_points_rewrite_csv(csv_path, &store) == GM_OK,
+          "rewrite_csv with empty store succeeds");
+
+    /* Reload -- must succeed and give an empty store (header-only
+     * file, same 'empty is not an error' convention). */
+    MeasurePointStore reloaded;
+    ASSERT(measure_points_load_csv(csv_path, &reloaded) == GM_OK,
+          "loading the rewritten empty CSV succeeds");
+    ASSERT(reloaded.count == 0, "reloaded store is empty");
+
+    cleanup_test_job_dir();
+}
+
+static void test_rewrite_csv_null_guard(void)
+{
+    ASSERT(measure_points_rewrite_csv("/tmp/unused.csv", NULL) == GM_ERR_GENERIC,
+          "rewrite_csv with NULL store returns GM_ERR_GENERIC");
+}
+
+/* =========================================================================
  * main
  * ========================================================================= */
+
 int main(void)
 {
+    /* Path helpers */
     test_path_helpers();
+
+    /* NULL guards */
     test_null_guards();
+
+    /* Export directory creation */
     test_creates_export_dir();
-    test_empty_store_csv();
+
+    /* Empty store */
+    test_empty_store_pnezd();
     test_empty_store_landxml();
-    test_nd_north_csv_values();
-    test_local_fallback_unit_conversion();
+
+    /* PNEZD column order and values */
+    test_pnezd_nd_north_column_order_and_values();
+    test_pnezd_no_header_row();
+    test_pnezd_local_fallback_imperial();
+
+    /* Formula injection safety */
+    test_pnezd_formula_injection_safety();
+
+    /* LandXML content */
     test_landxml_point_content();
     test_landxml_no_illegal_comment_sequence();
+
+    /* measure_points_remove() */
+    test_remove_from_middle();
+    test_remove_last_element();
+    test_remove_only_element();
+    test_remove_out_of_range();
+    test_remove_null_store();
+
+    /* measure_points_rewrite_csv() */
+    test_rewrite_csv_after_remove();
+    test_rewrite_csv_empty_store();
+    test_rewrite_csv_null_guard();
 
     if (g_tests_failed == 0) {
         printf("All %d measure_points_export tests passed.\n", g_tests_run);
         return 0;
     } else {
-        fprintf(stderr, "%d/%d measure_points_export tests FAILED.\n", g_tests_failed,
-                g_tests_run);
+        fprintf(stderr, "%d/%d measure_points_export tests FAILED.\n",
+                g_tests_failed, g_tests_run);
         return 1;
     }
 }

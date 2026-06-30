@@ -1731,7 +1731,7 @@ static void test_export_csv_falls_back_when_usb_not_mounted(void)
     export_screen_init(&ctx, &stack, &job_ctx);
     ui_stack_push(&stack, export_screen_as_ui_screen(&ctx));
 
-    UiWidget *csv_btn = find_widget(&ctx.grid, WIDGET_BUTTON, "Export CSV");
+    UiWidget *csv_btn = find_widget(&ctx.grid, WIDGET_BUTTON, "Export CSV (PNEZD)");
     ASSERT(csv_btn != NULL, "Export CSV button exists on the Export screen");
     if (csv_btn)
         activate_widget_directly(&ctx.grid, csv_btn);
@@ -1740,7 +1740,7 @@ static void test_export_csv_falls_back_when_usb_not_mounted(void)
           "With no USB drive mounted, CSV export reports the FALLBACK status, not plain OK");
 
     char expected_path[768];
-    snprintf(expected_path, sizeof(expected_path), "%s/export/points_export.csv",
+    snprintf(expected_path, sizeof(expected_path), "%s/export/points_pnezd.csv",
              job_ctx.job_dir);
     struct stat st;
     ASSERT(stat(expected_path, &st) == 0 && S_ISREG(st.st_mode),
