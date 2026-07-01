@@ -1,22 +1,31 @@
 #!/bin/bash
-set -euo pipefail
 
 PROFILE="geomark-rover"
 ROVER_IP="192.168.10.1"
-TIMEOUT=60  # seconds to wait for rover AP
+TIMEOUT=60
 INTERVAL=2
 
-# Bring up the nmcli connection if not already active
-if ! nmcli -t -f NAME connection show --active | grep -qx "$PROFILE"; then
-    echo "Bringing up $PROFILE..."
-    nmcli connection up "$PROFILE"
-fi
+elapsed=0
+while true; do
+    if nmcli connection up "$PROFILE" 2>/dev/null; then
+        echo "Connected to $PROFILE"
+        break
+    fi
 
-# Wait for rover AP to be reachable
+    if (( elapsed >= TIMEOUT )); then
+        echo "Timeout waiting to connect to $PROFILE after ${TIMEOUT}s" >&2
+        exit 1
+    fi
+
+    sleep "$INTERVAL"
+    ((elapsed += INTERVAL))
+done
+
+# Wait for rover to be reachable
 elapsed=0
 until ping -c1 -W1 "$ROVER_IP" >/dev/null 2>&1; do
-    if (( elapsed >= TIMEOUT)); then
-        echo "Timeout waiting for $ROVER_IP after ${TIMEOUT}s" >&2
+    if (( elapsed >= TIMEOUT )); then
+        echo "Timeout waiting for $ROVER_IP" >&2
         exit 1
     fi
     sleep "$INTERVAL"

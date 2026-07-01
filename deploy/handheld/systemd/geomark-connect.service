@@ -1,6 +1,6 @@
 [Unit]
 Description=GeoMark — connect handheld to rover AP
-After=network.target NetworkManager.service NetworkManager-wait-online.service
+After=network.target NetworkManager.service
 Wants=NetworkManager.service
 Requires=NetworkManager.service
 
