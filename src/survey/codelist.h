@@ -30,7 +30,15 @@
  * Constants
  * -------------------------------------------------------------------------- */
 
-#define CODELIST_MAX_ENTRIES 128
+/* 280 codes as of the ACG_TOPO_V1.xlsx point+line code list (see
+ * codelist.c's s_defaults[]) plus headroom for Alex's own additions via
+ * point_codes.txt without needing to raise this again immediately --
+ * same "raise on demonstrated need, generously" precedent
+ * GM_MEASURE_POINTS_MAX documents. Was 128 (enough for the original
+ * 12-entry built-in default list plus a hand-curated point_codes.txt);
+ * raised when the full ACG_TOPO_V1.xlsx code list (280 entries) became
+ * the new built-in default. */
+#define CODELIST_MAX_ENTRIES 320
 
 #define CODELIST_USB_PATH "/media/usb/geomark/point_codes.txt"
 #define CODELIST_SD_PATH "/home/alex/geomark/point_codes.txt"

@@ -89,6 +89,24 @@
  * to recompute from, the same reason Trimble's Point Manager keeps a
  * point's antenna height as an editable, recoverable record rather
  * than baking the correction in irreversibly.
+ *
+ * dn_ft/de_ft/dz_ft: the localization correction that was ACTIVE at
+ * the moment this point was captured (see measure_points_screen.h's
+ * "Localize" doc comment for how that correction is established and
+ * why it must be baked in per-point rather than applied once per job).
+ * Zero for every point captured before a localization was performed,
+ * or for a job that never uses localization at all -- these are pure
+ * additive offsets in the job's own projected feet units (whatever
+ * measure_points_project() would already return for this coord_sys:
+ * international feet for ND North, meters for the local fallback,
+ * despite the _ft suffix -- named for the common ND North case, same
+ * "named for the primary convention, not literally exact in the rare
+ * fallback path" precedent measure_points_export.h's own MeasurePoint::
+ * alt doc comment already sets for units.h). Applied by
+ * measure_points_export.c's measure_points_project_ft() at export
+ * time and by the map panel at display time -- see those call sites
+ * for the single place this addition actually happens; nothing else
+ * in this codebase should add these fields in a second place.
  */
 typedef struct {
     double lat;             /* decimal degrees, WGS84, +N */
@@ -102,8 +120,12 @@ typedef struct {
     uint8_t fix_quality;    /* gm_fix_type_t value at capture time */
     double hdop;
     uint8_t num_sats;
-    time_t timestamp;                     /* UTC epoch seconds at capture time */
-    uint32_t point_num;                   /* 1-based sequence within the job */
+    time_t timestamp;   /* UTC epoch seconds at capture time */
+    uint32_t point_num; /* 1-based sequence within the job */
+    double dn_ft;       /* localization correction active at
+                         * capture time -- see struct doc comment */
+    double de_ft;
+    double dz_ft;
     char name[GM_MEASURE_POINT_NAME_MAX]; /* point name/number, typed by the crew */
     char code[GM_MEASURE_POINT_CODE_MAX]; /* free-form; not yet interpreted */
 } MeasurePoint;
@@ -172,6 +194,25 @@ gm_status_t measure_points_rewrite_csv(const char *path, const MeasurePointStore
  * not a flat set of named settings -- still the same fopen/fgets/
  * strerror/log_* error-handling conventions job_metadata.c established,
  * just a row format suited to the data.
+ *
+ * Two header versions are recognized on load: the original 12-column
+ * format (no dn_ft/de_ft/dz_ft) and the current 15-column format that
+ * added them (see MeasurePoint's own doc comment on those three
+ * fields). A file loaded in the old format has every point's
+ * correction default to 0.0 (memset(&pt, 0, ...) already establishes
+ * this) -- exactly correct, since no localization correction could
+ * have existed before this feature did. measure_points_rewrite_csv()
+ * and measure_points_append_csv() both always WRITE the current
+ * 15-column format regardless of which format was loaded -- so a job
+ * whose points.csv predates this feature is transparently upgraded to
+ * the new format the next time anything writes to it (measure_points_
+ * screen.c's reload path forces exactly this by calling
+ * measure_points_rewrite_csv() once immediately after every successful
+ * load -- see that call site's own comment for why an unconditional
+ * rewrite, not a conditional "only if old format" check, is the safer
+ * choice: appending a new-format row onto an old-format file's header
+ * would otherwise silently desynchronize the two, and the old header
+ * would then reject the very file that was just partially upgraded).
  * ---------------------------------------------------------------------- */
 
 /**
@@ -190,8 +231,12 @@ gm_status_t measure_points_append_csv(const char *path, const MeasurePoint *poin
  * returns GM_OK (same "missing file is not an error" convention
  * job_metadata_load() uses) -- this is the expected case the first time
  * Measure Points is entered for a brand-new job.
- * Returns GM_ERR_PARSE if the file exists but its header row doesn't
- * match the expected column set, GM_OK otherwise.
+ * Accepts either the current 15-column header or the original
+ * 12-column header that predates the dn_ft/de_ft/dz_ft localization
+ * fields (see this header's file-level CSV persistence doc comment) --
+ * a row loaded from the old format has all three default to 0.0.
+ * Returns GM_ERR_PARSE if the file exists but its header row matches
+ * neither known format, GM_OK otherwise.
  */
 gm_status_t measure_points_load_csv(const char *path, MeasurePointStore *store);
 

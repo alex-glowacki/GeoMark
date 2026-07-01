@@ -13,7 +13,7 @@
  * height (PANEL_TOP_Y..PANEL_BOTTOM_Y) with no spare region reserved
  * for anything beyond badge/fields/Capture/readout (see
  * measure_points_screen.h's file-level doc comment) -- export needs a
- * job-name/point-count display, two format buttons, AND a result
+ * job-name/point-count display, three format buttons, AND a result
  * message, more than the few dozen free pixels below that screen's
  * existing readout could honestly hold without cramming. Same
  * "destination screen is its own focused thing, reached via one more
@@ -38,8 +38,9 @@
  * (collector/usb_export.h's USB_EXPORT_MOUNT_POINT, mirroring this
  * job's <project>/<job> structure under it) when actually mounted,
  * falling back to the fixed internal path under the job directory
- * (job_dir/export/points.xml, job_dir/export/points_export.csv -- see
- * collector/measure_points_export.h) when it is not. Checked fresh on
+ * (job_dir/export/points.xml, job_dir/export/points_export.csv,
+ * job_dir/export/points_pnezd.txt -- see collector/measure_points_
+ * export.h) when it is not. Checked fresh on
  * every Export button press (usb_export_is_mounted(), not cached at
  * on_enter) -- a field crew plugging the drive in or pulling it out
  * mid-session, between presses, should be honored immediately rather
@@ -77,6 +78,11 @@ typedef enum {
     EXPORT_SCREEN_STATUS_CSV_OK_FALLBACK,     /* CSV written to internal storage --
                                                * USB drive was not mounted */
     EXPORT_SCREEN_STATUS_CSV_ERROR,           /* CSV export failed (I/O), neither
+                                               * destination */
+    EXPORT_SCREEN_STATUS_TXT_OK,              /* PNEZD TXT written to the USB drive */
+    EXPORT_SCREEN_STATUS_TXT_OK_FALLBACK,     /* PNEZD TXT written to internal storage --
+                                               * USB drive was not mounted */
+    EXPORT_SCREEN_STATUS_TXT_ERROR,           /* PNEZD TXT export failed (I/O), neither
                                                * destination */
 } ExportScreenStatus;
 

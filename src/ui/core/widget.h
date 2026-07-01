@@ -18,10 +18,16 @@
  *     sharing a grid with a screen's own form widgets, then from 50 to 80
  *     when Job Create's Properties form (20 widgets: label+field/dropdown
  *     pairs across 9 rows plus a Properties heading and a Create button)
- *     plus the keyboard (41) totaled 61, exceeding 50. sizeof(UiWidget) is
- *     88 bytes as of this writing, so 80 widgets costs ~6.9KB per grid --
- *     trivial on a Pi 5, and this is one grid per active screen, not
- *     per-frame.
+ *     plus the keyboard (41) totaled 61, exceeding 50. Raised again from
+ *     80 to 320 when Measure Points' code picker (add_code_picker_buttons(),
+ *     one button per CodeList entry) needed to hold the full 280-code
+ *     ACG_TOPO_V1.xlsx list (see survey/codelist.c's s_defaults[]) plus
+ *     its own base widgets (name/code/height fields, Pick/Keyboard
+ *     buttons, back button -- 6 total) = 286, with headroom for Alex's
+ *     own point_codes.txt additions past the built-in 280. sizeof(UiWidget)
+ *     is 88 bytes as of this writing, so 320 widgets costs ~27.5KB per
+ *     grid -- trivial on a Pi 5, and this is one grid per active screen,
+ *     not per-frame.
  *   - This file + widget.c have zero dependency on ui/tft/display.h, so the
  *     logic is unit-testable on host with no SPI/GPIO/framebuffer present.
  *     Rendering lives in widget_draw.c, the only piece that touches
@@ -165,7 +171,7 @@ typedef struct UiWidget {
  * Widget grid — one screen's worth of focusable widgets
  * -------------------------------------------------------------------------- */
 
-#define UI_GRID_MAX_WIDGETS 80
+#define UI_GRID_MAX_WIDGETS 320
 
 typedef struct {
     UiWidget widgets[UI_GRID_MAX_WIDGETS];

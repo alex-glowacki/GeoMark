@@ -73,6 +73,7 @@ static void cleanup_test_job_dir(void)
     char path[768];
     snprintf(path, sizeof(path), "%s/export/points.xml",        TEST_JOB_DIR); unlink(path);
     snprintf(path, sizeof(path), "%s/export/points_pnezd.csv",  TEST_JOB_DIR); unlink(path);
+    snprintf(path, sizeof(path), "%s/export/points_pnezd.txt",  TEST_JOB_DIR); unlink(path);
     snprintf(path, sizeof(path), "%s/points.csv",               TEST_JOB_DIR); unlink(path);
     snprintf(path, sizeof(path), "%s/export",                   TEST_JOB_DIR); rmdir(path);
     rmdir(TEST_JOB_DIR);
@@ -96,6 +97,12 @@ static void test_path_helpers(void)
     ASSERT(strcmp(buf,
                   "/home/alex/geomark-data/projects/p/j/export/points_pnezd.csv") == 0,
           "PNEZD export path is job_dir/export/points_pnezd.csv");
+
+    measure_points_export_txt_path(
+        "/home/alex/geomark-data/projects/p/j", buf, sizeof(buf));
+    ASSERT(strcmp(buf,
+                  "/home/alex/geomark-data/projects/p/j/export/points_pnezd.txt") == 0,
+          "PNEZD TXT export path is job_dir/export/points_pnezd.txt");
 
     /* Both export paths are distinct from the internal points.csv path. */
     char internal_buf[768];
@@ -128,6 +135,12 @@ static void test_null_guards(void)
     ASSERT(measure_points_export_pnezd("/tmp/unused.csv", &store, NULL, 0.0, 0.0)
                == GM_ERR_GENERIC,
           "PNEZD export: NULL job_meta -> GM_ERR_GENERIC");
+    ASSERT(measure_points_export_txt("/tmp/unused.txt", NULL, &meta, 0.0, 0.0)
+               == GM_ERR_GENERIC,
+          "PNEZD TXT export: NULL store -> GM_ERR_GENERIC");
+    ASSERT(measure_points_export_txt("/tmp/unused.txt", &store, NULL, 0.0, 0.0)
+               == GM_ERR_GENERIC,
+          "PNEZD TXT export: NULL job_meta -> GM_ERR_GENERIC");
 }
 
 /* =========================================================================
@@ -438,6 +451,282 @@ static void test_pnezd_formula_injection_safety(void)
 }
 
 /* =========================================================================
+ * Localization correction: a point's own dn_ft/de_ft/dz_ft (see
+ * measure_points.h's MeasurePoint doc comment) must reach the exported
+ * Northing/Easting/Elevation, in every export format -- this is the
+ * actual mechanism the Measure Points "Localize" feature depends on.
+ * Same reference point/values as test_pnezd_nd_north_column_order_and_
+ * values, with a correction added on top.
+ * ========================================================================= */
+
+static void test_localization_correction_reaches_pnezd_export(void)
+{
+    cleanup_test_job_dir();
+    mkdir(TEST_JOB_DIR, 0755);
+
+    gm_job_metadata_t meta;
+    job_metadata_defaults(&meta);
+    meta.coord_sys = GM_COORD_SYS_ND_NORTH;
+    job_metadata_coerce_units(&meta);
+
+    MeasurePointStore store;
+    measure_points_init(&store);
+    MeasurePoint pt;
+    make_point(&pt, 46.8083, -100.7837, 10.0, "1", "CP");
+    pt.dn_ft = 2.5;
+    pt.de_ft = -1.25;
+    pt.dz_ft = 0.1;
+    measure_points_add(&store, pt);
+
+    char path[768];
+    measure_points_export_pnezd_path(TEST_JOB_DIR, path, sizeof(path));
+    ASSERT(measure_points_export_pnezd(path, &store, &meta, 0.0, 0.0) == GM_OK,
+          "PNEZD export with a localized point succeeds");
+
+    char content[2048];
+    slurp_file(path, content, sizeof(content));
+
+    unsigned point_num;
+    double northing, easting, elev;
+    char desc[64];
+    int n = sscanf(content, "%u,%lf,%lf,%lf,%63s",
+                   &point_num, &northing, &easting, &elev, desc);
+    ASSERT(n == 5, "PNEZD row still parses as 5 columns with a correction applied");
+    /* Uncorrected reference values (from test_pnezd_nd_north_column_
+     * order_and_values): N=-69797.606374, E=1897447.454977, Z=32.8084.
+     * The correction is additive on top of those. */
+    ASSERT(NEAR(northing, -69797.606374 + 2.5, 0.01),
+          "Northing includes the point's own +2.5 ft correction");
+    ASSERT(NEAR(easting, 1897447.454977 - 1.25, 0.01),
+          "Easting includes the point's own -1.25 ft correction");
+    ASSERT(NEAR(elev, 32.8084 + 0.1, 0.01),
+          "Elevation includes the point's own +0.1 ft correction");
+
+    cleanup_test_job_dir();
+}
+
+static void test_localization_correction_is_zero_noop_by_default(void)
+{
+    cleanup_test_job_dir();
+    mkdir(TEST_JOB_DIR, 0755);
+
+    gm_job_metadata_t meta;
+    job_metadata_defaults(&meta);
+    meta.coord_sys = GM_COORD_SYS_ND_NORTH;
+    job_metadata_coerce_units(&meta);
+
+    MeasurePointStore store;
+    measure_points_init(&store);
+    MeasurePoint pt;
+    make_point(&pt, 46.8083, -100.7837, 10.0, "1", "CP"); /* dn_ft/de_ft/dz_ft
+                                                           * left at 0.0 by
+                                                           * make_point()'s
+                                                           * own memset() */
+    measure_points_add(&store, pt);
+
+    char path[768];
+    measure_points_export_pnezd_path(TEST_JOB_DIR, path, sizeof(path));
+    measure_points_export_pnezd(path, &store, &meta, 0.0, 0.0);
+
+    char content[2048];
+    slurp_file(path, content, sizeof(content));
+
+    double northing, easting, elev;
+    unsigned point_num;
+    char desc[64];
+    sscanf(content, "%u,%lf,%lf,%lf,%63s", &point_num, &northing, &easting, &elev, desc);
+    ASSERT(NEAR(northing, -69797.606374, 0.01),
+          "With no correction, Northing matches the uncorrected reference value exactly");
+    ASSERT(NEAR(easting, 1897447.454977, 0.01),
+          "With no correction, Easting matches the uncorrected reference value exactly");
+    ASSERT(NEAR(elev, 32.8084, 0.01),
+          "With no correction, Elevation matches the uncorrected reference value exactly");
+
+    cleanup_test_job_dir();
+}
+
+/* =========================================================================
+ * PNEZD TXT export: header block + CRLF-terminated data rows, matching
+ * the shape of the reference export Alex supplied
+ * (TOPO_EXPORT_EXAMPLE.txt).
+ * ========================================================================= */
+
+static void test_txt_header_and_crlf(void)
+{
+    cleanup_test_job_dir();
+    mkdir(TEST_JOB_DIR, 0755);
+
+    gm_job_metadata_t meta;
+    job_metadata_defaults(&meta);
+    meta.coord_sys = GM_COORD_SYS_ND_NORTH;
+    job_metadata_coerce_units(&meta);
+    strncpy(meta.job_name, "TESTJOB", sizeof(meta.job_name) - 1);
+    strncpy(meta.reference, "1234-56789", sizeof(meta.reference) - 1);
+    strncpy(meta.description, "Preliminary Survey", sizeof(meta.description) - 1);
+
+    MeasurePointStore store;
+    measure_points_init(&store);
+    MeasurePoint pt;
+    make_point(&pt, 46.8083, -100.7837, 10.0, "1", "CP");
+    measure_points_add(&store, pt);
+
+    char path[768];
+    measure_points_export_txt_path(TEST_JOB_DIR, path, sizeof(path));
+    ASSERT(measure_points_export_txt(path, &store, &meta, 0.0, 0.0) == GM_OK,
+          "PNEZD TXT export succeeds");
+
+    char content[4096];
+    ASSERT(slurp_file(path, content, sizeof(content)), "PNEZD TXT file is readable");
+
+    ASSERT(strstr(content, "Name: TESTJOB\r\n") != NULL,
+          "Header includes the job name from job_meta");
+    ASSERT(strstr(content, "Name: United States/NAD83\r\n") != NULL,
+          "Header includes the NAD83 datum-family line for ND North jobs");
+    ASSERT(strstr(content, "Zone: North Dakota North 3301\r\n") != NULL,
+          "Header includes the ND North zone, matching Alex's own "
+          "reference export's zone name exactly");
+    ASSERT(strstr(content, "Reference number: 1234-56789\r\n") != NULL,
+          "Header includes the reference number from job_meta");
+    ASSERT(strstr(content, "Description: Preliminary Survey\r\n") != NULL,
+          "Header includes the description from job_meta");
+    ASSERT(strstr(content, "Units: International Feet\r\n") != NULL,
+          "Header reports International Feet -- ND North's job_metadata_"
+          "coerce_units() forces this unit");
+
+    /* Every line in the file (header AND data rows) is CRLF-terminated,
+     * never a bare LF -- count occurrences of each. */
+    size_t crlf_count = 0, bare_lf_count = 0;
+    for (const char *p = content; *p; p++) {
+        if (*p == '\n') {
+            bare_lf_count++;
+            if (p > content && p[-1] == '\r')
+                crlf_count++;
+        }
+    }
+    ASSERT(bare_lf_count > 0 && crlf_count == bare_lf_count,
+          "Every line ending in the file is CRLF, not a bare LF");
+
+    cleanup_test_job_dir();
+}
+
+/* =========================================================================
+ * PNEZD TXT export: data rows carry the exact same projected coordinates
+ * and Description-column safety as the plain CSV export -- same
+ * reference point/values as test_pnezd_nd_north_column_order_and_values.
+ * ========================================================================= */
+
+static void test_txt_data_rows_match_csv_values(void)
+{
+    cleanup_test_job_dir();
+    mkdir(TEST_JOB_DIR, 0755);
+
+    gm_job_metadata_t meta;
+    job_metadata_defaults(&meta);
+    meta.coord_sys = GM_COORD_SYS_ND_NORTH;
+    job_metadata_coerce_units(&meta);
+
+    MeasurePointStore store;
+    measure_points_init(&store);
+    MeasurePoint pt;
+    make_point(&pt, 46.8083, -100.7837, 10.0, "1", "+CONC");
+    measure_points_add(&store, pt);
+
+    char path[768];
+    measure_points_export_txt_path(TEST_JOB_DIR, path, sizeof(path));
+    ASSERT(measure_points_export_txt(path, &store, &meta, 0.0, 0.0) == GM_OK,
+          "PNEZD TXT export succeeds");
+
+    char content[4096];
+    slurp_file(path, content, sizeof(content));
+
+    /* Same reference values test_pnezd_nd_north_column_order_and_values
+     * already verifies for the CSV export. */
+    unsigned point_num;
+    double northing, easting, elev;
+    char desc[64];
+    const char *row = strstr(content, "1,");
+    ASSERT(row != NULL, "The data row for point 1 is present");
+    if (!row) { cleanup_test_job_dir(); return; }
+    int n = sscanf(row, "%u,%lf,%lf,%lf,%63s",
+                   &point_num, &northing, &easting, &elev, desc);
+    ASSERT(n == 5, "TXT data row parses as 5 columns: PNUM,N,E,Z,DESC");
+    ASSERT(point_num == 1, "TXT column 1 is point number");
+    ASSERT(NEAR(northing, -69797.606374, 0.01), "TXT column 2 is northing in feet");
+    ASSERT(NEAR(easting,  1897447.454977, 0.01), "TXT column 3 is easting in feet");
+    ASSERT(NEAR(elev, 32.8084, 0.01), "TXT column 4 is elevation in feet");
+    ASSERT(strstr(row, "\" +CONC\"") != NULL,
+          "'+CONC' is quoted with a space prefix in TXT too, same as the CSV export");
+
+    cleanup_test_job_dir();
+}
+
+/* =========================================================================
+ * PNEZD TXT export: non-ND-North jobs write an honest "no State Plane
+ * zone" line instead of fabricating a zone name.
+ * ========================================================================= */
+
+static void test_txt_non_nd_north_zone_line(void)
+{
+    cleanup_test_job_dir();
+    mkdir(TEST_JOB_DIR, 0755);
+
+    gm_job_metadata_t meta;
+    job_metadata_defaults(&meta); /* GM_COORD_SYS_WGS84 by default */
+
+    MeasurePointStore store;
+    measure_points_init(&store);
+
+    char path[768];
+    measure_points_export_txt_path(TEST_JOB_DIR, path, sizeof(path));
+    ASSERT(measure_points_export_txt(path, &store, &meta, 0.0, 0.0) == GM_OK,
+          "PNEZD TXT export succeeds for a non-ND-North job");
+
+    char content[4096];
+    slurp_file(path, content, sizeof(content));
+
+    ASSERT(strstr(content, "North Dakota North 3301") == NULL,
+          "A WGS84-geographic job's header does NOT claim the ND North zone");
+    ASSERT(strstr(content, "no State Plane zone") != NULL,
+          "A WGS84-geographic job's header honestly says it has no "
+          "State Plane zone, instead of a fabricated one");
+
+    cleanup_test_job_dir();
+}
+
+/* =========================================================================
+ * PNEZD TXT export: an empty store still writes the header block, with
+ * zero data rows following it.
+ * ========================================================================= */
+
+static void test_txt_empty_store(void)
+{
+    cleanup_test_job_dir();
+    mkdir(TEST_JOB_DIR, 0755);
+
+    gm_job_metadata_t meta;
+    job_metadata_defaults(&meta);
+    meta.coord_sys = GM_COORD_SYS_ND_NORTH;
+    job_metadata_coerce_units(&meta);
+
+    MeasurePointStore store;
+    measure_points_init(&store);
+
+    char path[768];
+    measure_points_export_txt_path(TEST_JOB_DIR, path, sizeof(path));
+    ASSERT(measure_points_export_txt(path, &store, &meta, 0.0, 0.0) == GM_OK,
+          "PNEZD TXT export succeeds with zero points");
+
+    char content[4096];
+    slurp_file(path, content, sizeof(content));
+    ASSERT(strstr(content, "Zone: North Dakota North 3301\r\n") != NULL,
+          "Header is still written even with zero points");
+    ASSERT(strstr(content, "GRID Coordinates") != NULL,
+          "The scale-factor line is still written with zero points");
+
+    cleanup_test_job_dir();
+}
+
+/* =========================================================================
  * LandXML content -- attribute escaping, N/E/Z order, imperial values
  * ========================================================================= */
 
@@ -711,6 +1000,12 @@ int main(void)
 
     /* Formula injection safety */
     test_pnezd_formula_injection_safety();
+    test_localization_correction_reaches_pnezd_export();
+    test_localization_correction_is_zero_noop_by_default();
+    test_txt_header_and_crlf();
+    test_txt_data_rows_match_csv_values();
+    test_txt_non_nd_north_zone_line();
+    test_txt_empty_store();
 
     /* LandXML content */
     test_landxml_point_content();

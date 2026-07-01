@@ -246,3 +246,40 @@ target_include_directories(test_breaklines PRIVATE
 )
 target_link_libraries(test_breaklines PRIVATE m)
 add_test(NAME test_breaklines COMMAND test_breaklines)
+
+# test_codelist: survey/codelist.h's built-in default point code list --
+# specifically the replacement of the original 12-entry hand-picked list
+# with the full ACG_TOPO_V1.xlsx point+line code list (280 entries).
+# Pure host-testable, no display/hardware dependency -- codelist.c itself
+# has none (see codelist.h's own file-level doc comment on its plain-text
+# loader design).
+add_executable(test_codelist
+    ${PROJECT_SOURCE_DIR}/tests/test_codelist.c
+    ${PROJECT_SOURCE_DIR}/src/survey/codelist.c
+    ${PROJECT_SOURCE_DIR}/src/util/log.c
+)
+target_include_directories(test_codelist PRIVATE
+    ${PROJECT_SOURCE_DIR}/include
+    ${PROJECT_SOURCE_DIR}/src
+)
+add_test(NAME test_codelist COMMAND test_codelist)
+
+# test_measure_points: collector/measure_points.c's CSV persistence --
+# specifically the V1 (12-column) / V2 (15-column, dn_ft/de_ft/dz_ft
+# added) header compatibility introduced for the Localize feature (see
+# measure_points_screen.h's file-level "Localize" doc comment).
+# Pure host-testable, needs coords.c + libm transitively the same way
+# test_breaklines above already does (measure_points.c calls
+# coords_wgs84_to_nd_north() for ND North job projection).
+add_executable(test_measure_points
+    ${PROJECT_SOURCE_DIR}/tests/test_measure_points.c
+    ${PROJECT_SOURCE_DIR}/src/collector/measure_points.c
+    ${PROJECT_SOURCE_DIR}/src/collector/coords.c
+    ${PROJECT_SOURCE_DIR}/src/util/log.c
+)
+target_include_directories(test_measure_points PRIVATE
+    ${PROJECT_SOURCE_DIR}/include
+    ${PROJECT_SOURCE_DIR}/src
+)
+target_link_libraries(test_measure_points PRIVATE m)
+add_test(NAME test_measure_points COMMAND test_measure_points)

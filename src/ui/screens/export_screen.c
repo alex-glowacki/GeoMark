@@ -75,17 +75,19 @@ static void resolve_origin(const MeasurePointStore *points,
  * Tries the USB drive first (if mounted); falls back to the internal
  * job_dir/export/ location. usb_export_path_for_job() resolves both
  * the LandXML and PNEZD CSV destination paths together in one call.
- * The PNEZD path is derived by replacing "points_export.csv" with
- * "points_pnezd.csv" in the resolved csv_path, keeping the same
- * directory on whichever destination won (USB or internal).
+ * The PNEZD and PNEZD TXT paths are derived by replacing
+ * "points_export.csv" with "points_pnezd.csv"/"points_pnezd.txt" in
+ * the resolved csv_path, keeping the same directory on whichever
+ * destination won (USB or internal).
  * ---------------------------------------------------------------------- */
 
 static bool resolve_export_destination(const JobContext *job_ctx,
                                        char *out_xml_path, size_t xml_len,
-                                       char *out_pnezd_path, size_t pnezd_len)
+                                       char *out_pnezd_path, size_t pnezd_len,
+                                       char *out_txt_path, size_t txt_len)
 {
     /* usb_export_path_for_job() fills both xml and csv paths. We use
-     * the csv path only to derive the pnezd path (same directory,
+     * the csv path only to derive the pnezd/txt paths (same directory,
      * different filename). A temporary csv_path buffer is sufficient. */
     char csv_path[USB_EXPORT_PATH_MAX];
 
@@ -93,14 +95,17 @@ static bool resolve_export_destination(const JobContext *job_ctx,
         usb_export_path_for_job(job_ctx->job_dir,
                                 out_xml_path, xml_len,
                                 csv_path, sizeof(csv_path)) == GM_OK) {
-        /* Replace filename: "points_export.csv" -> "points_pnezd.csv"
-         * in the same USB directory. Find the last '/' and rebuild. */
+        /* Replace filename: "points_export.csv" -> "points_pnezd.csv" /
+         * "points_pnezd.txt" in the same USB directory. Find the last
+         * '/' and rebuild. */
         char *last_slash = strrchr(csv_path, '/');
         if (last_slash) {
             *last_slash = '\0';
             snprintf(out_pnezd_path, pnezd_len, "%s/points_pnezd.csv", csv_path);
+            snprintf(out_txt_path,   txt_len,   "%s/points_pnezd.txt", csv_path);
         } else {
             snprintf(out_pnezd_path, pnezd_len, "%s", csv_path);
+            snprintf(out_txt_path,   txt_len,   "%s", csv_path);
         }
         return true;
     }
@@ -108,6 +113,7 @@ static bool resolve_export_destination(const JobContext *job_ctx,
     /* Internal storage fallback. */
     measure_points_export_landxml_path(job_ctx->job_dir, out_xml_path, xml_len);
     measure_points_export_pnezd_path(job_ctx->job_dir, out_pnezd_path, pnezd_len);
+    measure_points_export_txt_path(job_ctx->job_dir, out_txt_path, txt_len);
     return false;
 }
 
@@ -129,10 +135,12 @@ static void on_export_landxml(UiWidget *self, void *screen_ctx)
     resolve_origin(&ctx->points, &origin_lat, &origin_lon);
 
     char xml_path[USB_EXPORT_PATH_MAX];
-    char pnezd_path[USB_EXPORT_PATH_MAX];
+    char pnezd_path[USB_EXPORT_PATH_MAX]; /* unused by this callback */
+    char txt_path[USB_EXPORT_PATH_MAX];   /* unused by this callback */
     bool used_usb = resolve_export_destination(ctx->job_ctx,
                                                xml_path, sizeof(xml_path),
-                                               pnezd_path, sizeof(pnezd_path));
+                                               pnezd_path, sizeof(pnezd_path),
+                                               txt_path, sizeof(txt_path));
 
     gm_status_t rc = measure_points_export_landxml(xml_path, &ctx->points,
                                                    &ctx->job_meta,
@@ -164,9 +172,11 @@ static void on_export_csv(UiWidget *self, void *screen_ctx)
 
     char xml_path[USB_EXPORT_PATH_MAX]; /* unused by this callback */
     char pnezd_path[USB_EXPORT_PATH_MAX];
+    char txt_path[USB_EXPORT_PATH_MAX]; /* unused by this callback */
     bool used_usb = resolve_export_destination(ctx->job_ctx,
                                                xml_path, sizeof(xml_path),
-                                               pnezd_path, sizeof(pnezd_path));
+                                               pnezd_path, sizeof(pnezd_path),
+                                               txt_path, sizeof(txt_path));
 
     gm_status_t rc = measure_points_export_pnezd(pnezd_path, &ctx->points,
                                                   &ctx->job_meta,
@@ -180,6 +190,42 @@ static void on_export_csv(UiWidget *self, void *screen_ctx)
                            : EXPORT_SCREEN_STATUS_CSV_OK_FALLBACK;
     log_info("export_screen: wrote PNEZD CSV for job '%s' (%u points) to %s (%s)",
              ctx->job_ctx->name, ctx->points.count, pnezd_path,
+             used_usb ? "USB" : "internal storage");
+}
+
+static void on_export_txt(UiWidget *self, void *screen_ctx)
+{
+    (void)self;
+    ExportScreenCtx *ctx = (ExportScreenCtx *)screen_ctx;
+
+    if (!ctx->job_ctx || !job_context_has_job(ctx->job_ctx)) {
+        ctx->status = EXPORT_SCREEN_STATUS_NO_JOB;
+        return;
+    }
+
+    double origin_lat, origin_lon;
+    resolve_origin(&ctx->points, &origin_lat, &origin_lon);
+
+    char xml_path[USB_EXPORT_PATH_MAX];   /* unused by this callback */
+    char pnezd_path[USB_EXPORT_PATH_MAX]; /* unused by this callback */
+    char txt_path[USB_EXPORT_PATH_MAX];
+    bool used_usb = resolve_export_destination(ctx->job_ctx,
+                                               xml_path, sizeof(xml_path),
+                                               pnezd_path, sizeof(pnezd_path),
+                                               txt_path, sizeof(txt_path));
+
+    gm_status_t rc = measure_points_export_txt(txt_path, &ctx->points,
+                                               &ctx->job_meta,
+                                               origin_lat, origin_lon);
+    if (rc != GM_OK) {
+        ctx->status = EXPORT_SCREEN_STATUS_TXT_ERROR;
+        return;
+    }
+
+    ctx->status = used_usb ? EXPORT_SCREEN_STATUS_TXT_OK
+                           : EXPORT_SCREEN_STATUS_TXT_OK_FALLBACK;
+    log_info("export_screen: wrote PNEZD TXT for job '%s' (%u points) to %s (%s)",
+             ctx->job_ctx->name, ctx->points.count, txt_path,
              used_usb ? "USB" : "internal storage");
 }
 
@@ -210,9 +256,12 @@ void export_screen_init(ExportScreenCtx *ctx, UiScreenStack *stack,
                   EXPORT_BTN_W, EXPORT_BTN_H };
     UiRect r2 = { EXPORT_MARGIN, EXPORT_BTN_TOP_Y + EXPORT_BTN_H + EXPORT_GAP,
                   EXPORT_BTN_W, EXPORT_BTN_H };
+    UiRect r3 = { EXPORT_MARGIN, EXPORT_BTN_TOP_Y + 2 * (EXPORT_BTN_H + EXPORT_GAP),
+                  EXPORT_BTN_W, EXPORT_BTN_H };
 
     ui_grid_add_button(&ctx->grid, r1, "Export LandXML", on_export_landxml);
     ui_grid_add_button(&ctx->grid, r2, "Export CSV (PNEZD)", on_export_csv);
+    ui_grid_add_button(&ctx->grid, r3, "Export TXT (PNEZD)", on_export_txt);
     ui_grid_add_back_button(&ctx->grid, on_back);
 }
 

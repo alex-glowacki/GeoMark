@@ -1757,11 +1757,67 @@ static void test_export_csv_falls_back_when_usb_not_mounted(void)
     rmdir(tmp_home);
 }
 
+static void test_export_txt_falls_back_when_usb_not_mounted(void)
+{
+    UiScreenStack stack;
+    ui_stack_init(&stack);
+
+    char tmpl[] = "/tmp/geomark_test_home_XXXXXX";
+    char *tmp_home = mkdtemp(tmpl);
+    ASSERT(tmp_home != NULL, "mkdtemp created a disposable HOME for this test");
+
+    JobContext job_ctx;
+    job_context_set(&job_ctx, tmp_home, "TESTPROJ_EXPORT3", "TESTJOB_EXPORT3");
+
+    /* See test_export_landxml_falls_back_when_usb_not_mounted()'s
+     * identical comment above for why job_ctx.job_dir must be created
+     * on disk explicitly here. */
+    char data_dir[640];
+    snprintf(data_dir, sizeof(data_dir), "%s/geomark-data", tmp_home);
+    char projects_dir[660];
+    snprintf(projects_dir, sizeof(projects_dir), "%s/projects", data_dir);
+    char project_dir[700];
+    snprintf(project_dir, sizeof(project_dir), "%s/TESTPROJ_EXPORT3", projects_dir);
+    mkdir(data_dir, 0755);
+    mkdir(projects_dir, 0755);
+    mkdir(project_dir, 0755);
+    mkdir(job_ctx.job_dir, 0755);
+
+    ExportScreenCtx ctx;
+    export_screen_init(&ctx, &stack, &job_ctx);
+    ui_stack_push(&stack, export_screen_as_ui_screen(&ctx));
+
+    UiWidget *txt_btn = find_widget(&ctx.grid, WIDGET_BUTTON, "Export TXT (PNEZD)");
+    ASSERT(txt_btn != NULL, "Export TXT button exists on the Export screen");
+    if (txt_btn)
+        activate_widget_directly(&ctx.grid, txt_btn);
+
+    ASSERT(ctx.status == EXPORT_SCREEN_STATUS_TXT_OK_FALLBACK,
+          "With no USB drive mounted, TXT export reports the FALLBACK status, not plain OK");
+
+    char expected_path[768];
+    snprintf(expected_path, sizeof(expected_path), "%s/export/points_pnezd.txt",
+             job_ctx.job_dir);
+    struct stat st;
+    ASSERT(stat(expected_path, &st) == 0 && S_ISREG(st.st_mode),
+          "The TXT file was actually written to internal storage, not silently dropped");
+
+    unlink(expected_path);
+    char export_dir[768];
+    snprintf(export_dir, sizeof(export_dir), "%s/export", job_ctx.job_dir);
+    rmdir(export_dir);
+    rmdir(job_ctx.job_dir);
+    rmdir(project_dir);
+    rmdir(projects_dir);
+    rmdir(data_dir);
+    rmdir(tmp_home);
+}
+
 /**
- * No active job: both Export buttons must report NO_JOB rather than
- * attempting to resolve a USB or internal destination at all -- same
- * "check job_context_has_job() before touching any path" guard
- * on_export_landxml()/on_export_csv() already each have.
+ * No active job: all three Export buttons must report NO_JOB rather
+ * than attempting to resolve a USB or internal destination at all --
+ * same "check job_context_has_job() before touching any path" guard
+ * on_export_landxml()/on_export_csv()/on_export_txt() each have.
  */
 static void test_export_no_job_blocks_export(void)
 {
@@ -1783,6 +1839,14 @@ static void test_export_no_job_blocks_export(void)
     ASSERT(ctx.status == EXPORT_SCREEN_STATUS_NO_JOB,
           "Pressing Export LandXML with no active job reports NO_JOB, "
           "not an attempted (and meaningless) export");
+
+    UiWidget *txt_btn = find_widget(&ctx.grid, WIDGET_BUTTON, "Export TXT (PNEZD)");
+    ASSERT(txt_btn != NULL, "Export TXT button exists even with no active job");
+    if (txt_btn)
+        activate_widget_directly(&ctx.grid, txt_btn);
+
+    ASSERT(ctx.status == EXPORT_SCREEN_STATUS_NO_JOB,
+          "Pressing Export TXT with no active job reports NO_JOB too");
 }
 
 /* -------------------------------------------------------------------------
@@ -2325,6 +2389,177 @@ static void test_measure_points_breakline_code_round_trips_through_capture(void)
 }
 
 /* -------------------------------------------------------------------------
+ * Localize: shoot a known point, type its true Northing/Easting/
+ * Elevation, "Capture & Apply" -- verifies the resulting correction is
+ * exactly (known - raw), that it's baked into points captured AFTER
+ * localizing, and that a point captured BEFORE localizing is NOT
+ * retroactively touched (the whole point of per-point, not per-job,
+ * correction storage -- see measure_points_screen.h's file-level
+ * "Localize" doc comment).
+ * ---------------------------------------------------------------------- */
+
+/* Types `text` into the named text field via the real keyboard
+ * (clearing whatever was there first with Del), then presses Done --
+ * same sequence type_code_and_capture() above uses for the Code field,
+ * generalized to any labeled text field (here, the three Localize
+ * fields) and factored to stop at Done rather than also pressing
+ * Capture Point, since Localize's own "Capture & Apply" button is a
+ * separate, explicit step. */
+static void type_into_field(MeasurePointsScreenCtx *ctx, const char *field_label,
+                            const char *text, size_t *len_field)
+{
+    UiWidget *field = find_widget(&ctx->grid, WIDGET_TEXT_FIELD, field_label);
+    ASSERT(field != NULL, "Localize text field exists");
+    if (field)
+        activate_widget_directly(&ctx->grid, field);
+
+    while (*len_field > 0) {
+        UiWidget *del_key = find_widget(&ctx->grid, WIDGET_BUTTON, "Del");
+        ASSERT(del_key != NULL, "Keyboard Del key exists");
+        if (del_key) activate_widget_directly(&ctx->grid, del_key);
+    }
+
+    for (const char *p = text; *p; p++) {
+        UiWidget *key = find_widget(&ctx->grid, WIDGET_BUTTON, (char[]){ *p, '\0' });
+        ASSERT(key != NULL, "Each character of the typed value has a matching key");
+        if (key) activate_widget_directly(&ctx->grid, key);
+    }
+
+    UiWidget *done_key = find_widget(&ctx->grid, WIDGET_BUTTON, "Done");
+    ASSERT(done_key != NULL, "Keyboard Done key exists");
+    if (done_key) activate_widget_directly(&ctx->grid, done_key);
+}
+
+static void test_localize_applies_correction_to_future_points_only(void)
+{
+    char tmpl[] = "/tmp/geomark_test_home_XXXXXX";
+    char *tmp_home = mkdtemp(tmpl);
+    ASSERT(tmp_home != NULL, "mkdtemp created a disposable HOME for this test");
+
+    UiScreenStack stack;
+    ui_stack_init(&stack);
+
+    JobContext job_ctx;
+    job_context_set(&job_ctx, tmp_home, "TESTPROJ", "TESTJOB");
+    mkdir(tmp_home, 0755);
+
+    TestFeedState feed_state;
+    memset(&feed_state, 0, sizeof(feed_state));
+
+    MeasurePointsScreenCtx ctx;
+    ExportScreenCtx export_ctx;
+    export_screen_init(&export_ctx, &stack, &job_ctx);
+    measure_points_screen_init(&ctx, &stack, &job_ctx, make_test_feed(&feed_state),
+                               export_screen_as_ui_screen(&export_ctx));
+    ui_stack_push(&stack, measure_points_screen_as_ui_screen(&ctx));
+    /* Set coord_sys AFTER the push, not before -- on_enter (fired by
+     * ui_stack_push itself) calls reload_job_data(), which resets
+     * ctx.job_meta to defaults (job.ini doesn't exist in this
+     * disposable test HOME) and would silently wipe out an
+     * earlier-set coord_sys. */
+    ctx.job_meta.coord_sys = GM_COORD_SYS_ND_NORTH;
+    job_metadata_coerce_units(&ctx.job_meta);
+
+    /* Reference point (same one test_measure_points_export.c's own ND
+     * North tests use): lat=46.8083, lon=-100.7837 -> raw projected
+     * N=-69797.606374, E=1897447.454977, alt=10.0m -> Z=32.8084 ft. */
+    feed_state.next.lat         = 46.8083;
+    feed_state.next.lon         = -100.7837;
+    feed_state.next.alt         = 10.0;
+    feed_state.next.fix_quality = (uint8_t)FIX_RTK_FIXED;
+    feed_state.next.hdop        = 0.8;
+    feed_state.next.num_sats    = 12;
+    feed_state.next.valid       = true;
+    ui_stack_tick(&stack, 0);
+
+    /* Capture ONE ordinary point BEFORE localizing -- this is the
+     * point that must NOT be retroactively corrected. */
+    type_code_and_capture(&ctx, "BEFORE");
+    ASSERT(ctx.points.count == 1, "The pre-localization point was captured");
+
+    /* Open Localize, type known Northing/Easting/Elevation
+     * (raw + 10 / raw + 20 / raw + 1), Capture & Apply. */
+    UiWidget *localize_btn = find_widget(&ctx.grid, WIDGET_BUTTON, "Localize");
+    ASSERT(localize_btn != NULL, "Localize button exists in the action row");
+    if (localize_btn) activate_widget_directly(&ctx.grid, localize_btn);
+    ASSERT(ctx.overlay == MEASURE_POINTS_OVERLAY_LOCALIZE,
+          "Pressing Localize opens the Localize overlay");
+
+    type_into_field(&ctx, "Known Northing (ft)", "-69787.606374", &ctx.loc_n_len);
+    ASSERT(ctx.overlay == MEASURE_POINTS_OVERLAY_LOCALIZE,
+          "Pressing Done on a Localize field returns to the Localize overlay, "
+          "not the base screen -- the bug this test specifically guards against");
+
+    type_into_field(&ctx, "Known Easting (ft)", "1897467.454977", &ctx.loc_e_len);
+    type_into_field(&ctx, "Known Elevation (ft)", "33.8084", &ctx.loc_z_len);
+
+    UiWidget *apply_btn = find_widget(&ctx.grid, WIDGET_BUTTON, "Capture & Apply");
+    ASSERT(apply_btn != NULL, "Capture & Apply button exists in the Localize overlay");
+    if (apply_btn) activate_widget_directly(&ctx.grid, apply_btn);
+
+    ASSERT(ctx.status == MEASURE_POINTS_STATUS_LOCALIZE_OK, "Localize reports success");
+    ASSERT(ctx.overlay == MEASURE_POINTS_OVERLAY_NONE,
+          "A successful localization closes the overlay");
+    ASSERT(ctx.have_localization, "have_localization is now true");
+    ASSERT(fabs((ctx.active_dn_ft) - (10.0)) < 0.01, "active_dn_ft is exactly known - raw (+10)");
+    ASSERT(fabs((ctx.active_de_ft) - (20.0)) < 0.01, "active_de_ft is exactly known - raw (+20)");
+    ASSERT(fabs((ctx.active_dz_ft) - (1.0)) < 0.01, "active_dz_ft is exactly known - raw (+1)");
+
+    /* Capture a SECOND ordinary point AFTER localizing -- this one
+     * must have the correction baked in. */
+    type_code_and_capture(&ctx, "AFTER");
+    ASSERT(ctx.points.count == 2, "The post-localization point was captured");
+
+    if (ctx.points.count == 2) {
+        ASSERT(ctx.points.points[0].dn_ft == 0.0 && ctx.points.points[0].de_ft == 0.0
+              && ctx.points.points[0].dz_ft == 0.0,
+              "The BEFORE point's correction is still exactly 0.0 -- localizing "
+              "later did NOT retroactively touch it");
+        ASSERT(fabs((ctx.points.points[1].dn_ft) - (10.0)) < 0.01
+              && fabs((ctx.points.points[1].de_ft) - (20.0)) < 0.01
+              && fabs((ctx.points.points[1].dz_ft) - (1.0)) < 0.01,
+              "The AFTER point has the active correction baked in exactly");
+    }
+
+    rmdir(tmp_home);
+}
+
+static void test_localize_rejects_capture_with_no_fix(void)
+{
+    UiScreenStack stack;
+    ui_stack_init(&stack);
+
+    JobContext job_ctx;
+    job_context_init(&job_ctx);
+
+    TestFeedState feed_state;
+    memset(&feed_state, 0, sizeof(feed_state)); /* valid stays false */
+
+    MeasurePointsScreenCtx ctx;
+    ExportScreenCtx export_ctx;
+    export_screen_init(&export_ctx, &stack, &job_ctx);
+    measure_points_screen_init(&ctx, &stack, &job_ctx, make_test_feed(&feed_state),
+                               export_screen_as_ui_screen(&export_ctx));
+    ui_stack_push(&stack, measure_points_screen_as_ui_screen(&ctx));
+    ui_stack_tick(&stack, 0);
+
+    UiWidget *localize_btn = find_widget(&ctx.grid, WIDGET_BUTTON, "Localize");
+    if (localize_btn) activate_widget_directly(&ctx.grid, localize_btn);
+
+    type_into_field(&ctx, "Known Northing (ft)", "100", &ctx.loc_n_len);
+    type_into_field(&ctx, "Known Easting (ft)", "200", &ctx.loc_e_len);
+    type_into_field(&ctx, "Known Elevation (ft)", "300", &ctx.loc_z_len);
+
+    UiWidget *apply_btn = find_widget(&ctx.grid, WIDGET_BUTTON, "Capture & Apply");
+    if (apply_btn) activate_widget_directly(&ctx.grid, apply_btn);
+
+    ASSERT(ctx.status == MEASURE_POINTS_STATUS_LOCALIZE_NO_FIX,
+          "Capture & Apply with no valid fix reports LOCALIZE_NO_FIX");
+    ASSERT(!ctx.have_localization,
+          "No correction is applied when there is no valid fix to compute it from");
+}
+
+/* -------------------------------------------------------------------------
  * Keyboard toggle button: explicit show/hide trigger, independent of
  * field activation. Also confirms toggling off while already off (a
  * theoretical double-press race) doesn't somehow show it -- the
@@ -2511,22 +2746,24 @@ static void test_measure_points_code_picker_fills_code_field(void)
     ASSERT(find_widget(&ctx.grid, WIDGET_BUTTON, "Capture Point") == NULL,
           "Capture Point is removed from the grid while the code picker is open");
 
-    /* "CONC" (Concrete) is one of codelist.c's own built-in defaults --
-     * confirmed present via codelist_find() rather than assumed, so
-     * this test stays correct even if the default list is ever
-     * reordered (only its presence matters, not its position). */
-    const CodeEntry *expected = codelist_find(&ctx.codelist, "CONC");
-    ASSERT(expected != NULL, "The built-in code list includes \"CONC\"");
+    /* "CP" (Control Point) is one of codelist.c's own built-in defaults
+     * (the ACG_TOPO_V1.xlsx code list -- see survey/codelist.c's
+     * s_defaults[]) -- confirmed present via codelist_find() rather
+     * than assumed, so this test stays correct even if the default
+     * list is ever reordered (only its presence matters, not its
+     * position). */
+    const CodeEntry *expected = codelist_find(&ctx.codelist, "CP");
+    ASSERT(expected != NULL, "The built-in code list includes \"CP\"");
 
-    UiWidget *code_entry_btn = find_widget(&ctx.grid, WIDGET_BUTTON, "CONC");
-    ASSERT(code_entry_btn != NULL, "A button for the \"CONC\" entry exists in the picker");
+    UiWidget *code_entry_btn = find_widget(&ctx.grid, WIDGET_BUTTON, "CP");
+    ASSERT(code_entry_btn != NULL, "A button for the \"CP\" entry exists in the picker");
     if (code_entry_btn)
         activate_widget_directly(&ctx.grid, code_entry_btn);
 
     ASSERT(ctx.overlay == MEASURE_POINTS_OVERLAY_NONE,
           "Selecting a code closes the picker overlay");
-    ASSERT(strcmp(ctx.code_buf, "CONC") == 0,
-          "Selecting \"CONC\" fills the Code field with it");
+    ASSERT(strcmp(ctx.code_buf, "CP") == 0,
+          "Selecting \"CP\" fills the Code field with it");
     ASSERT(find_widget(&ctx.grid, WIDGET_BUTTON, "Capture Point") != NULL,
           "Capture Point is reachable again once the picker closes");
 }
@@ -2553,10 +2790,13 @@ int main(void)
     test_measure_points_no_fix_blocks_capture();
     test_export_landxml_falls_back_when_usb_not_mounted();
     test_export_csv_falls_back_when_usb_not_mounted();
+    test_export_txt_falls_back_when_usb_not_mounted();
     test_export_no_job_blocks_export();
     test_measure_points_capture_and_persist_end_to_end();
     test_measure_points_typed_fields_and_height_correction();
     test_measure_points_breakline_code_round_trips_through_capture();
+    test_localize_applies_correction_to_future_points_only();
+    test_localize_rejects_capture_with_no_fix();
     test_measure_points_keyboard_toggle_button();
     test_measure_points_back_closes_overlay_first();
     test_measure_points_back_button_tap_closes_overlay_first();

@@ -42,9 +42,21 @@
  * that -- see the parsing comment below for the exact split logic.
  * Declared at file scope (above all functions that use it) so both
  * measure_points_rewrite_csv() and measure_points_append_csv() can
- * reference it without forward declarations. */
-static const char *CSV_HEADER =
+ * reference it without forward declarations.
+ *
+ * CSV_HEADER_V1 is the original 12-column format, still recognized on
+ * load for backward compatibility with a job's existing points.csv
+ * (see this file's own file-level CSV persistence doc comment).
+ * CSV_HEADER_V2 is the current 15-column format (dn_ft/de_ft/dz_ft
+ * inserted before name/code, keeping both free-form trailing fields'
+ * "everything after the fixed prefix" parsing logic unchanged) -- the
+ * ONLY format ever written by measure_points_rewrite_csv()/
+ * measure_points_append_csv(), regardless of which format was loaded. */
+static const char *CSV_HEADER_V1 =
     "point_num,timestamp,lat,lon,alt,raw_alt,target_height_m,fix_quality,hdop,num_sats,name,code\n";
+static const char *CSV_HEADER_V2 =
+    "point_num,timestamp,lat,lon,alt,raw_alt,target_height_m,fix_quality,hdop,num_sats,"
+    "dn_ft,de_ft,dz_ft,name,code\n";
 
 /* -------------------------------------------------------------------------
  * In-memory store
@@ -110,11 +122,11 @@ gm_status_t measure_points_rewrite_csv(const char *path, const MeasurePointStore
         return GM_ERR_IO;
     }
 
-    fputs(CSV_HEADER, f);
+    fputs(CSV_HEADER_V2, f);
 
     for (uint32_t i = 0; i < store->count; i++) {
         const MeasurePoint *pt = &store->points[i];
-        fprintf(f, "%u,%lld,%.8f,%.8f,%.3f,%.3f,%.3f,%u,%.2f,%u,%s,%s\n",
+        fprintf(f, "%u,%lld,%.8f,%.8f,%.3f,%.3f,%.3f,%u,%.2f,%u,%.4f,%.4f,%.4f,%s,%s\n",
                 pt->point_num,
                 (long long)pt->timestamp,
                 pt->lat,
@@ -125,6 +137,9 @@ gm_status_t measure_points_rewrite_csv(const char *path, const MeasurePointStore
                 (unsigned)pt->fix_quality,
                 pt->hdop,
                 (unsigned)pt->num_sats,
+                pt->dn_ft,
+                pt->de_ft,
+                pt->dz_ft,
                 pt->name,
                 pt->code);
     }
@@ -154,9 +169,9 @@ gm_status_t measure_points_append_csv(const char *path, const MeasurePoint *poin
     }
 
     if (!exists)
-        fputs(CSV_HEADER, f);
+        fputs(CSV_HEADER_V2, f);
 
-    fprintf(f, "%u,%lld,%.8f,%.8f,%.3f,%.3f,%.3f,%u,%.2f,%u,%s,%s\n",
+    fprintf(f, "%u,%lld,%.8f,%.8f,%.3f,%.3f,%.3f,%u,%.2f,%u,%.4f,%.4f,%.4f,%s,%s\n",
             point->point_num,
             (long long)point->timestamp,
             point->lat,
@@ -167,6 +182,9 @@ gm_status_t measure_points_append_csv(const char *path, const MeasurePoint *poin
             (unsigned)point->fix_quality,
             point->hdop,
             (unsigned)point->num_sats,
+            point->dn_ft,
+            point->de_ft,
+            point->dz_ft,
             point->name,
             point->code);
 
@@ -188,19 +206,26 @@ gm_status_t measure_points_load_csv(const char *path, MeasurePointStore *store)
 
     char line[MEASURE_POINTS_CSV_MAX_LINE];
 
-    /* Header row -- must match exactly, same strictness coords.h's own
-     * forward-only-transform comment implies for this codebase (\"no
-     * range check is performed... it simply becomes a poor
-     * approximation\" is the documented tolerance level; a header
-     * mismatch here is a real format problem, not a tolerance case). */
+    /* Header row -- must match one of the two known formats exactly,
+     * same strictness coords.h's own forward-only-transform comment
+     * implies for this codebase ("no range check is performed... it
+     * simply becomes a poor approximation" is the documented tolerance
+     * level; a header matching NEITHER format here is a real format
+     * problem, not a tolerance case). is_v2 selects which sscanf/split
+     * shape the row loop below uses. */
     if (!fgets(line, sizeof(line), f)) {
         log_warn("measure_points_load_csv: '%s' is empty -- starting empty", path);
         fclose(f);
         return GM_OK;
     }
-    if (strcmp(line, CSV_HEADER) != 0) {
-        log_error("measure_points_load_csv: '%s' header does not match expected columns",
-                  path);
+    bool is_v2;
+    if (strcmp(line, CSV_HEADER_V2) == 0) {
+        is_v2 = true;
+    } else if (strcmp(line, CSV_HEADER_V1) == 0) {
+        is_v2 = false;
+    } else {
+        log_error("measure_points_load_csv: '%s' header does not match either known "
+                  "column format", path);
         fclose(f);
         return GM_ERR_PARSE;
     }
@@ -216,37 +241,53 @@ gm_status_t measure_points_load_csv(const char *path, MeasurePointStore *store)
         }
 
         MeasurePoint pt;
-        memset(&pt, 0, sizeof(pt));
+        memset(&pt, 0, sizeof(pt)); /* dn_ft/de_ft/dz_ft default to 0.0 here for a
+                                     * V1 row -- see this file's own CSV persistence
+                                     * doc comment */
 
         unsigned point_num, fix_quality, num_sats;
         long long ts;
         int tail_offset = 0;
-        /* The first 10 (fixed-format, comma-delimited) numeric columns
-         * are parsed via sscanf, with %n capturing the byte offset
-         * immediately after the 10th column's trailing comma -- same
-         * "%n instead of %s for a free-form trailing field" technique
-         * the single-trailing-field version of this parser used
-         * (%s requires at least one non-whitespace character and so
+        /* The fixed-format, comma-delimited numeric columns are parsed
+         * via sscanf, with %n capturing the byte offset immediately
+         * after the LAST numeric column's trailing comma -- same "%n
+         * instead of %s for a free-form trailing field" technique the
+         * single-trailing-field version of this parser used (%s
+         * requires at least one non-whitespace character and so
          * rejects an empty field; see this function's git history for
          * the bug that caused). With TWO free-form trailing fields
-         * (name, code) now, the remainder of the line from tail_offset
-         * onward is "name,code" -- split on the comma between them.
-         * This split is safe specifically because the on-screen
-         * keyboard that produces both fields has a closed character
-         * set (letters, digits, '-', '_', space -- see
-         * ui/core/keyboard.h's file-level doc comment) that can never
-         * contain a comma, so the first comma found after tail_offset
-         * is unambiguously the name/code separator, not part of
-         * either field's own content. */
-        int n = sscanf(line, "%u,%lld,%lf,%lf,%lf,%lf,%lf,%u,%lf,%u,%n",
+         * (name, code) after the numeric prefix, the remainder of the
+         * line from tail_offset onward is "name,code" -- split on the
+         * comma between them. This split is safe specifically because
+         * the on-screen keyboard that produces both fields has a
+         * closed character set (letters, digits, '.', '-', '_', '+',
+         * '*', space -- see ui/core/keyboard.h's file-level doc
+         * comment) that can never contain a comma, so the first comma
+         * found after tail_offset is unambiguously the name/code
+         * separator, not part of either field's own content. */
+        int n;
+        if (is_v2) {
+            n = sscanf(line, "%u,%lld,%lf,%lf,%lf,%lf,%lf,%u,%lf,%u,%lf,%lf,%lf,%n",
+                      &point_num, &ts, &pt.lat, &pt.lon, &pt.alt,
+                      &pt.raw_alt, &pt.target_height_m,
+                      &fix_quality, &pt.hdop, &num_sats,
+                      &pt.dn_ft, &pt.de_ft, &pt.dz_ft, &tail_offset);
+            if (n != 13 || tail_offset == 0) {
+                log_warn("measure_points_load_csv: '%s':%d: malformed row -- skipped",
+                         path, lineno);
+                continue;
+            }
+        } else {
+            n = sscanf(line, "%u,%lld,%lf,%lf,%lf,%lf,%lf,%u,%lf,%u,%n",
                       &point_num, &ts, &pt.lat, &pt.lon, &pt.alt,
                       &pt.raw_alt, &pt.target_height_m,
                       &fix_quality, &pt.hdop, &num_sats, &tail_offset);
-
-        if (n != 10 || tail_offset == 0) {
-            log_warn("measure_points_load_csv: '%s':%d: malformed row -- skipped",
-                     path, lineno);
-            continue;
+            if (n != 10 || tail_offset == 0) {
+                log_warn("measure_points_load_csv: '%s':%d: malformed row -- skipped",
+                         path, lineno);
+                continue;
+            }
+            /* pt.dn_ft/de_ft/dz_ft already 0.0 from the memset() above. */
         }
 
         const char *tail = line + tail_offset;

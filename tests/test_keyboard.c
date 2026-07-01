@@ -77,7 +77,7 @@ static void test_char_keys_append(void)
     UiKeyboardLabels labels;
 
     fake_screen_init(&ctx, buf, sizeof(buf), &len, &grid, &labels);
-    ASSERT(keyboard_add_to_grid(&grid, &labels), "All 43 keys fit in the grid");
+    ASSERT(keyboard_add_to_grid(&grid, &labels), "All 44 keys fit in the grid");
 
     /* Find the 'A' key by its label and activate it directly -- exercises
      * exactly the path ui_grid_handle_event() would take for a tap or a
@@ -118,7 +118,7 @@ static void test_plus_key_appends(void)
     UiKeyboardLabels labels;
 
     fake_screen_init(&ctx, buf, sizeof(buf), &len, &grid, &labels);
-    ASSERT(keyboard_add_to_grid(&grid, &labels), "All 43 keys fit in the grid");
+    ASSERT(keyboard_add_to_grid(&grid, &labels), "All 44 keys fit in the grid");
 
     UiWidget *key_plus = NULL;
     for (uint32_t i = 0; i < grid.count; i++) {
@@ -162,6 +162,77 @@ static void test_plus_key_appends(void)
     ASSERT(strcmp(buf, "+24RCPF") == 0,
           "'+' followed by '24RCPF' produces the exact breakline-start code "
           "from the CADD editing standards worked example");
+}
+
+/* =========================================================================
+ * '*' key: for Measure Points' Code field to append a free-text detail
+ * suffix onto an otherwise-ordinary code (e.g. "GRV*4in thick") -- see
+ * collector/breaklines.h. Same activation path as any other char key, so
+ * (like test_plus_key_appends() above) this exists primarily to prove
+ * the key is present and wired up in the real layout, and that it
+ * combines correctly with plain letter/digit keys in one buffer.
+ * ========================================================================= */
+
+static void test_asterisk_key_appends(void)
+{
+    char   buf[24] = {0};
+    size_t len     = 0;
+    FakeScreenCtx ctx;
+    UiWidgetGrid grid;
+    UiKeyboardLabels labels;
+
+    fake_screen_init(&ctx, buf, sizeof(buf), &len, &grid, &labels);
+    ASSERT(keyboard_add_to_grid(&grid, &labels), "All 44 keys fit in the grid");
+
+    UiWidget *key_star = NULL;
+    for (uint32_t i = 0; i < grid.count; i++) {
+        if (grid.widgets[i].label && strcmp(grid.widgets[i].label, "*") == 0) {
+            key_star = &grid.widgets[i];
+            break;
+        }
+    }
+    ASSERT(key_star != NULL, "Key '*' exists in the grid");
+
+    UiEvent activate = { .type = UI_EVENT_ACTIVATE };
+
+    /* Type "GRV" then '*' then "4IN THICK" (the keyboard only ever
+     * produces upper-case letters -- see this file's own header
+     * comment) -- Alex's own worked example for the detail-suffix
+     * convention, "GRV*4in thick", typed exactly as the on-screen
+     * keyboard would actually produce it. The space in "4IN THICK" is
+     * typed via the "Space" action key (a whole-word label, not a
+     * single-char one), not via this loop's usual per-character
+     * lookup -- same special case test_decimal_key_produces_
+     * parseable_float() doesn't need but test_space_appends_space()
+     * above already established for the Space key specifically. */
+    const char *typed = "GRV*4IN THICK";
+    for (const char *p = typed; *p; p++) {
+        UiWidget *key = NULL;
+        if (*p == ' ') {
+            for (uint32_t i = 0; i < grid.count; i++) {
+                if (grid.widgets[i].label && strcmp(grid.widgets[i].label, "Space") == 0) {
+                    key = &grid.widgets[i];
+                    break;
+                }
+            }
+        } else {
+            char label[2] = { *p, '\0' };
+            for (uint32_t i = 0; i < grid.count; i++) {
+                if (grid.widgets[i].label && strcmp(grid.widgets[i].label, label) == 0) {
+                    key = &grid.widgets[i];
+                    break;
+                }
+            }
+        }
+        ASSERT(key != NULL, "Each character of the worked example exists as a key");
+        if (!key) continue;
+        grid.focus_idx = (int32_t)(key - grid.widgets);
+        ui_grid_handle_event(&grid, activate);
+    }
+
+    ASSERT(strcmp(buf, "GRV*4IN THICK") == 0,
+          "'GRV', '*', and '4IN THICK' typed in sequence produce the exact "
+          "detail-suffixed code from Alex's own worked example");
 }
 
 /* =========================================================================
@@ -317,9 +388,12 @@ static void test_done_and_own_widget_share_grid(void)
 }
 
 /* =========================================================================
- * Grid capacity: all 43 keys plus a few of the screen's own widgets must
- * fit under UI_GRID_MAX_WIDGETS (50) -- this is what motivated raising
- * the cap from 24.
+ * Grid capacity: all 44 keys plus a few of the screen's own widgets must
+ * fit under UI_GRID_MAX_WIDGETS -- originally what motivated raising the
+ * cap from 24 to 50; the cap has since been raised again, to 320, for
+ * Measure Points' code picker (one button per point code, see
+ * survey/codelist.c's 280-entry s_defaults[]), which has ample headroom
+ * left over for this test's 46 widgets.
  * ========================================================================= */
 
 static void test_full_layout_fits_with_headroom(void)
@@ -338,8 +412,8 @@ static void test_full_layout_fits_with_headroom(void)
     ui_grid_add_text_field(&grid, r2, "Project Name", buf, sizeof(buf));
 
     ASSERT(keyboard_add_to_grid(&grid, &labels),
-          "Label + text field + 43 keyboard keys (45 widgets) fit under the 50 cap");
-    ASSERT(grid.count == 45, "Grid holds exactly label + field + 43 keys");
+          "Label + text field + 44 keyboard keys (46 widgets) fit under the cap");
+    ASSERT(grid.count == 46, "Grid holds exactly label + field + 44 keys");
 }
 
 /* =========================================================================
@@ -361,7 +435,7 @@ static void test_decimal_key_produces_parseable_float(void)
     UiKeyboardLabels labels;
 
     fake_screen_init(&ctx, buf, sizeof(buf), &len, &grid, &labels);
-    ASSERT(keyboard_add_to_grid(&grid, &labels), "All 43 keys fit in the grid");
+    ASSERT(keyboard_add_to_grid(&grid, &labels), "All 44 keys fit in the grid");
 
     UiWidget *dot = NULL;
     for (uint32_t i = 0; i < grid.count; i++) {
@@ -419,9 +493,9 @@ static void test_every_key_is_nav_excluded(void)
     UiKeyboardLabels labels;
 
     fake_screen_init(&ctx, buf, sizeof(buf), &len, &grid, &labels);
-    ASSERT(keyboard_add_to_grid(&grid, &labels), "All 43 keys fit in the grid");
+    ASSERT(keyboard_add_to_grid(&grid, &labels), "All 44 keys fit in the grid");
 
-    const char *spot_check[] = { "A", "1", ".", "-", "_", "+", "Space", "Del", "Done" };
+    const char *spot_check[] = { "A", "1", ".", "-", "_", "+", "*", "Space", "Del", "Done" };
     for (size_t i = 0; i < sizeof(spot_check) / sizeof(spot_check[0]); i++) {
         UiWidget *key = NULL;
         for (uint32_t j = 0; j < grid.count; j++) {
@@ -436,7 +510,7 @@ static void test_every_key_is_nav_excluded(void)
                   "Spot-checked key is marked nav_excluded (Up/Down must never land on it)");
     }
 
-    /* Exhaustive check too -- every single one of the 43 widgets this
+    /* Exhaustive check too -- every single one of the 44 widgets this
      * module adds, not just the spot-checked subset above, must be
      * nav_excluded. The spot checks above give an attributable failure
      * message per key kind; this confirms there is no key anywhere in
@@ -454,6 +528,7 @@ int main(void)
 {
     test_char_keys_append();
     test_plus_key_appends();
+    test_asterisk_key_appends();
     test_del_removes_last_char();
     test_space_appends_space();
     test_buffer_full_guard();

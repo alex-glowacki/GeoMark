@@ -40,6 +40,7 @@
 
 #include "ui/screens/measure_points_screen.h"
 #include "collector/breaklines.h"
+#include "collector/measure_points_export.h"
 #include "ui/tft/display.h"
 #include "util/units.h"
 
@@ -141,6 +142,12 @@ static const char *status_text(MeasurePointsStatus status)
         return "Point limit reached for this job";
     case MEASURE_POINTS_STATUS_NO_FIX:
         return "No valid fix -- cannot capture a point yet";
+    case MEASURE_POINTS_STATUS_LOCALIZE_NO_FIX:
+        return "No valid fix -- cannot localize yet";
+    case MEASURE_POINTS_STATUS_LOCALIZE_BAD_INPUT:
+        return "Enter Known Northing/Easting/Elevation before applying";
+    case MEASURE_POINTS_STATUS_LOCALIZE_OK:
+        return "Localization applied -- new points now corrected";
     case MEASURE_POINTS_STATUS_NONE:
     default:
         return NULL;
@@ -203,10 +210,12 @@ static void draw_line_segment(int32_t x0, int32_t y0, int32_t x1, int32_t y1, ui
  * below it at the smallest available text scale (see MAP_LABEL_SCALE) --
  * deliberately just the number, not the code, to keep a map with many
  * points readable (see MAP_LABEL_SCALE's own doc comment). Each point is
- * projected through measure_points_project() (job coord_sys aware, see
- * that function's own doc comment) into the job's east/north units,
- * then scaled to fit the panel with a margin. Screen positions are
- * computed once into a local per-point array (screen_x/screen_y,
+ * projected through measure_points_project_ft() (job coord_sys aware,
+ * converted to the job's foot unit, and with that point's own
+ * localization correction already added -- see collector/
+ * measure_points_export.h's own doc comment) into the job's east/north
+ * units, then scaled to fit the panel with a margin. Screen positions
+ * are computed once into a local per-point array (screen_x/screen_y,
  * screen_valid) so the breakline pass below can look up a vertex's
  * position by its MeasurePointStore index without re-running the
  * projection a second time.
@@ -251,23 +260,21 @@ static void draw_map_panel(const MeasurePointsScreenCtx *ctx, uint16_t map_x, ui
     bool first = true;
 
     for (uint32_t i = 0; i < ctx->points.count; i++) {
-        MeasurePointsProjected p;
-        gm_status_t rc = measure_points_project(&ctx->job_meta,
-                                                 ctx->points.points[i].lat,
-                                                 ctx->points.points[i].lon,
-                                                 ctx->origin_lat, ctx->origin_lon, &p);
+        MeasurePointsProjectedFt p;
+        gm_status_t rc = measure_points_project_ft(&ctx->points.points[i], &ctx->job_meta,
+                                                    ctx->origin_lat, ctx->origin_lon, &p);
         if (rc != GM_OK)
             continue;
 
         if (first) {
-            min_e = max_e = p.east;
-            min_n = max_n = p.north;
+            min_e = max_e = p.easting;
+            min_n = max_n = p.northing;
             first = false;
         } else {
-            if (p.east < min_e) min_e = p.east;
-            if (p.east > max_e) max_e = p.east;
-            if (p.north < min_n) min_n = p.north;
-            if (p.north > max_n) max_n = p.north;
+            if (p.easting < min_e) min_e = p.easting;
+            if (p.easting > max_e) max_e = p.easting;
+            if (p.northing < min_n) min_n = p.northing;
+            if (p.northing > max_n) max_n = p.northing;
         }
     }
 
@@ -302,19 +309,17 @@ static void draw_map_panel(const MeasurePointsScreenCtx *ctx, uint16_t map_x, ui
     static bool screen_valid[GM_MEASURE_POINTS_MAX];
 
     for (uint32_t i = 0; i < ctx->points.count; i++) {
-        MeasurePointsProjected p;
-        gm_status_t rc = measure_points_project(&ctx->job_meta,
-                                                 ctx->points.points[i].lat,
-                                                 ctx->points.points[i].lon,
-                                                 ctx->origin_lat, ctx->origin_lon, &p);
+        MeasurePointsProjectedFt p;
+        gm_status_t rc = measure_points_project_ft(&ctx->points.points[i], &ctx->job_meta,
+                                                    ctx->origin_lat, ctx->origin_lon, &p);
         if (rc != GM_OK) {
             screen_valid[i] = false;
             continue;
         }
 
-        double dx = (p.east - center_e) * scale;
+        double dx = (p.easting - center_e) * scale;
         /* Screen Y grows downward; map north should grow upward. */
-        double dy = -(p.north - center_n) * scale;
+        double dy = -(p.northing - center_n) * scale;
 
         int32_t px = (int32_t)(inner_x + inner_w / 2 + dx);
         int32_t py = (int32_t)(inner_y + inner_h / 2 + dy);
@@ -558,6 +563,18 @@ void measure_points_screen_render(void *raw_ctx)
         display_draw_string(8, (uint16_t)(MP_OVERLAY_TOP_Y + 6),
                             list_title, TFT_CYAN, TFT_BLACK, 1);
         /* Thin separator line below the title. */
+        display_fill_rect(0, (uint16_t)(MP_OVERLAY_TOP_Y + 22),
+                          TFT_WIDTH, 1, TFT_DKGRAY);
+    }
+
+    /* Localize overlay title -- same banner pattern as the point list
+     * overlay above, so add_localize_widgets()'s "+28 to clear the
+     * title" field placement (measure_points_screen.c) has an actual
+     * title to clear. */
+    if (ctx->overlay == MEASURE_POINTS_OVERLAY_LOCALIZE) {
+        const char *loc_title = "Localize -- shoot a known point, enter its true coordinate";
+        display_draw_string(8, (uint16_t)(MP_OVERLAY_TOP_Y + 6),
+                            loc_title, TFT_CYAN, TFT_BLACK, 1);
         display_fill_rect(0, (uint16_t)(MP_OVERLAY_TOP_Y + 22),
                           TFT_WIDTH, 1, TFT_DKGRAY);
     }

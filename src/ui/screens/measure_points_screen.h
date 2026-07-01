@@ -40,6 +40,37 @@
  *     coupling to the legacy capture flow's lifecycle is introduced).
  *     The Code field remains a free-typed WIDGET_TEXT_FIELD regardless
  *     -- picking a code is optional, never required.
+ *   - Localize shows when the "Localize" button (in the action row
+ *     alongside Export/Points) is pressed. Fixes the Day-1/Day-2
+ *     absolute-position offset that a fresh base-station survey-in
+ *     produces every session (see collector/measure_points_export.h's
+ *     MeasurePointsProjectedFt doc comment and MeasurePoint::dn_ft's
+ *     own doc comment in measure_points.h for the full mechanism): the
+ *     crew shoots a point with an independently-known true coordinate
+ *     (an NGS monument, or their own previously-localized property
+ *     control point), types that TRUE Northing/Easting/Elevation into
+ *     the three Localize fields, and presses "Capture & Apply". GeoMark
+ *     projects the just-captured raw fix, computes the delta between
+ *     that and the typed true values, and stores the delta as this
+ *     screen's ACTIVE correction (ctx->have_localization/active_dn_ft/
+ *     active_de_ft/active_dz_ft below) -- purely in-memory, reset every
+ *     time this screen is (re)entered, deliberately NOT persisted to
+ *     job.ini or anywhere else (see set_active_field()'s LOC_* cases
+ *     and on_localize_capture_activate() in the .c file for why: a
+ *     silently-stale correction surviving an app restart or a new day
+ *     would risk exactly the kind of invisible-bug problem this
+ *     feature exists to fix -- the crew must consciously re-localize
+ *     each session, which fails safe: forgetting to localize means
+ *     uncorrected data, never silently-wrong data from a prior
+ *     session's different correction). Every point captured AFTER a
+ *     successful localization has the active correction baked into its
+ *     own dn_ft/de_ft/dz_ft at the moment of capture (see
+ *     on_capture_point()) -- points captured before it, or in an
+ *     earlier session with its own different correction, keep whatever
+ *     was baked into them at THEIR capture time, unaffected by a later
+ *     localization. This per-point (not per-job) design is what makes
+ *     resuming a multi-day job safe: re-localizing on Day 2 corrects
+ *     Day 2's points without touching Day 1's already-correct ones.
  *
  * Because the overlay and the screen's own fields can't both be
  * focusable at once (the d-pad's Up/Down/Center has no way to express
@@ -172,10 +203,14 @@ RtkFeed measure_points_no_feed(void);
 
 typedef enum {
     MEASURE_POINTS_STATUS_NONE = 0,
-    MEASURE_POINTS_STATUS_NO_JOB,     /* JobContext has no job set */
-    MEASURE_POINTS_STATUS_LOAD_ERROR, /* points.csv exists but failed to parse */
-    MEASURE_POINTS_STATUS_STORE_FULL, /* GM_MEASURE_POINTS_MAX reached */
-    MEASURE_POINTS_STATUS_NO_FIX,     /* Capture pressed with no valid fix */
+    MEASURE_POINTS_STATUS_NO_JOB,             /* JobContext has no job set */
+    MEASURE_POINTS_STATUS_LOAD_ERROR,         /* points.csv exists but failed to parse */
+    MEASURE_POINTS_STATUS_STORE_FULL,         /* GM_MEASURE_POINTS_MAX reached */
+    MEASURE_POINTS_STATUS_NO_FIX,             /* Capture pressed with no valid fix */
+    MEASURE_POINTS_STATUS_LOCALIZE_NO_FIX,    /* Capture & Apply pressed with no valid fix */
+    MEASURE_POINTS_STATUS_LOCALIZE_BAD_INPUT, /* one of the three known-coordinate
+                                               * fields didn't parse as a number */
+    MEASURE_POINTS_STATUS_LOCALIZE_OK,        /* localization applied successfully */
 } MeasurePointsStatus;
 
 /** Limits for the typed Target height field's own text buffer -- plenty
@@ -191,26 +226,39 @@ typedef enum {
  *  keyboard understands directly. */
 #define MEASURE_POINTS_HEIGHT_BUF_MAX 16
 
+/** Limits for the Localize overlay's three typed known-coordinate
+ *  fields (Northing/Easting/Elevation) -- generous enough for any
+ *  realistic State Plane coordinate in feet with several decimal
+ *  places ("1897447.4550"), same parsed-via-atof()-at-use-time
+ *  convention MEASURE_POINTS_HEIGHT_BUF_MAX's own doc comment
+ *  establishes for Target height. */
+#define MEASURE_POINTS_LOC_BUF_MAX 24
+
 /**
  * Which text field the keyboard is currently feeding -- same pattern
  * job_create_screen.h's JobCreateActiveField already established for
- * its six fields, here for this screen's three.
+ * its six fields, here for this screen's three (plus the three
+ * Localize fields, added when that overlay was).
  */
 typedef enum {
     MEASURE_POINTS_FIELD_NONE = 0,
     MEASURE_POINTS_FIELD_NAME,
     MEASURE_POINTS_FIELD_CODE,
     MEASURE_POINTS_FIELD_HEIGHT,
+    MEASURE_POINTS_FIELD_LOC_N, /* Localize overlay: known Northing */
+    MEASURE_POINTS_FIELD_LOC_E, /* Localize overlay: known Easting */
+    MEASURE_POINTS_FIELD_LOC_Z, /* Localize overlay: known Elevation */
 } MeasurePointsActiveField;
 
 /**
  * Which overlay (if any) currently owns the bottom portion of the
  * screen and the grid's focusable widget set. NONE means the screen's
  * own three fields + Pick Code + Capture Point + keyboard-toggle button
- * are what's in the grid; KEYBOARD/CODE_PICKER mean that overlay's
- * widgets replace them until hidden. Mutually exclusive by construction
- * (showing one always hides the other first, see show_keyboard()/
- * show_code_picker() in the .c file) -- there is no UI for both at once.
+ * are what's in the grid; KEYBOARD/CODE_PICKER/LOCALIZE mean that
+ * overlay's widgets replace them until hidden. Mutually exclusive by
+ * construction (showing one always hides the other first, see
+ * show_keyboard()/show_code_picker()/on_localize_activate() in the .c
+ * file) -- there is no UI for both at once.
  */
 typedef enum {
     MEASURE_POINTS_OVERLAY_NONE = 0,
@@ -224,6 +272,10 @@ typedef enum {
                                         * than right-column-only, same
                                         * MP_OVERLAY_TOP_Y boundary as
                                         * the keyboard overlay */
+    MEASURE_POINTS_OVERLAY_LOCALIZE,   /* "shoot a known point, tell
+                                        * GeoMark its true coordinate"
+                                        * workflow -- see the "Localize"
+                                        * doc comment below */
 } MeasurePointsOverlay;
 
 /** Upper bound on code-picker list entries shown per screen -- matches
@@ -266,6 +318,29 @@ typedef struct {
     size_t name_len;
     size_t code_len;
     size_t height_len;
+
+    /* Localize overlay's three typed known-coordinate fields -- see
+     * this header's file-level "Localize" doc comment. Only meaningful
+     * while overlay == MEASURE_POINTS_OVERLAY_LOCALIZE (or the keyboard
+     * is feeding one of them); not read anywhere else. */
+    char loc_n_buf[MEASURE_POINTS_LOC_BUF_MAX];
+    char loc_e_buf[MEASURE_POINTS_LOC_BUF_MAX];
+    char loc_z_buf[MEASURE_POINTS_LOC_BUF_MAX];
+    size_t loc_n_len;
+    size_t loc_e_len;
+    size_t loc_z_len;
+
+    /* This screen instance's ACTIVE localization correction -- see this
+     * header's file-level "Localize" doc comment for why this is pure
+     * in-memory session state, never persisted, and why it is baked
+     * into each point's own dn_ft/de_ft/dz_ft at capture time rather
+     * than applied later. have_localization starts false every time
+     * this screen is (re)entered (measure_points_screen_init() zeroes
+     * the whole ctx). */
+    bool have_localization;
+    double active_dn_ft;
+    double active_de_ft;
+    double active_dz_ft;
 
     MeasurePointsActiveField active_field;
     MeasurePointsOverlay overlay;
@@ -382,28 +457,40 @@ UiScreen measure_points_screen_as_ui_screen(MeasurePointsScreenCtx *ctx);
 #define MP_READOUT_ROW_H 14
 #define MP_READOUT_ROWS 6
 
-/* Export button -- below the live-fix readout's MP_READOUT_ROWS rows
- * (MP_READOUT_Y..MP_READOUT_Y + MP_READOUT_ROWS*MP_READOUT_ROW_H), inside
- * the panel height that remains free below it (PANEL_BOTTOM_Y=472 minus
- * the readout's own bottom edge, ~42px of margin at the 6-row count
- * above, after MP_CAPTURE_H was raised to 40) -- this screen's fixed
- * layout has room for exactly two more rows here without any redesign.
- * Pushes export_screen (see export_screen.h) rather than performing the
- * export inline -- this screen's right panel has no space left for a
- * result message or format choice beyond a single button, see that
- * header's own doc comment for the full reasoning. */
-#define MP_EXPORT_Y (MP_READOUT_Y + MP_READOUT_ROWS * MP_READOUT_ROW_H + 6)
-#define MP_EXPORT_H 28
+/* Action row: Export, Points, and Localize side by side in ONE row
+ * (rather than Export/Points each getting their own full-width row, as
+ * before Localize existed) -- reclaims the ~34px a second stacked row
+ * would otherwise need, since PANEL_BOTTOM_Y leaves no room for a
+ * third stacked row without shrinking something else (verified: the
+ * previous two-row layout left only 16px of margin below the Points
+ * row, nowhere near the ~34px a third row needs). Three buttons of
+ * MP_ACTION_BTN_W each, MP_ACTION_GAP apart, same 250px-wide column
+ * the two-row layout used to fill: 3*79 + 2*6 = 249, fitting inside
+ * MP_NAME_W (250) with 1px to spare. Pushes export_screen (see
+ * export_screen.h) rather than performing the export inline -- this
+ * screen's right panel has no space left for a result message or
+ * format choice beyond a single button, see that header's own doc
+ * comment for the full reasoning. Points opens the
+ * MEASURE_POINTS_OVERLAY_POINT_LIST overlay; Localize opens
+ * MEASURE_POINTS_OVERLAY_LOCALIZE (see this header's file-level
+ * "Localize" doc comment). */
+#define MP_ACTION_ROW_Y (MP_READOUT_Y + MP_READOUT_ROWS * MP_READOUT_ROW_H + 6)
+#define MP_ACTION_ROW_H 28
+#define MP_ACTION_GAP 6
+#define MP_ACTION_BTN_W 79 /* (MP_NAME_W - 2*MP_ACTION_GAP) / 3, rounded down */
 
-/* Points List button -- immediately below Export, same compact height.
- * Opens the MEASURE_POINTS_OVERLAY_POINT_LIST overlay (a scrollable
- * list of every captured point with per-row Delete buttons), the same
- * overlay mechanism as the keyboard and code-picker already use. Taller
- * region: overlay covers the left map panel portion (MP_OVERLAY_TOP_Y
- * downward), giving a wider list than the right-column-only keyboard
- * overlay would allow, so multiple-column per-row layout is possible. */
-#define MP_POINTS_LIST_Y (MP_EXPORT_Y + MP_EXPORT_H + 6)
-#define MP_POINTS_LIST_H 28
+#define MP_EXPORT_Y                                                                                \
+    MP_ACTION_ROW_Y /* kept for test_measure_points_readout_layout_fits()'s                        \
+                     * existing geometry check -- see that test's own                              \
+                     * comment; still names "the action row's Y", just no                          \
+                     * longer Export's own exclusive row */
+#define MP_EXPORT_H MP_ACTION_ROW_H
+
+#define MP_POINTS_LIST_Y MP_ACTION_ROW_Y
+#define MP_POINTS_LIST_H MP_ACTION_ROW_H
+
+#define MP_LOCALIZE_Y MP_ACTION_ROW_Y
+#define MP_LOCALIZE_H MP_ACTION_ROW_H
 
 /* -------------------------------------------------------------------------
  * Overlay region -- matches ui/core/keyboard.h's own fixed footprint

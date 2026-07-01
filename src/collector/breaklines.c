@@ -50,6 +50,23 @@ static CodeKind classify_code(const char *code, const char **key_out)
 }
 
 /* -------------------------------------------------------------------------
+ * '*' detail-suffix stripping
+ *
+ * Everything from the first '*' onward (asterisk included) is detail
+ * text for the drafter/engineer, not part of the line-matching key --
+ * see breaklines.h's file-level doc comment on the convention and
+ * Alex's own worked example. This never touches the original code
+ * string (store->points[i].code) -- callers only ever use the returned
+ * length to bound a comparison or a snprintf(), so the full original
+ * text (asterisk and suffix included) still reaches export untouched.
+ * ---------------------------------------------------------------------- */
+
+static size_t key_match_len(const char *key)
+{
+    return strcspn(key, "*");
+}
+
+/* -------------------------------------------------------------------------
  * Open-line lookup
  *
  * Linear scan over the lines built so far -- GM_BREAKLINES_MAX (256) is
@@ -62,16 +79,23 @@ static CodeKind classify_code(const char *code, const char **key_out)
 
 static int32_t find_open_line(const BreaklineSet *set, const char *key)
 {
-    if (key[0] == '\0')
-        return -1; /* an empty key can never match -- "+"<nothing> and a
-                    * bare empty code are both degenerate inputs no real
-                    * field-book code would produce; treating them as
-                    * "never matches" keeps this function's contract
-                    * simple rather than special-casing a key nobody
-                    * will actually type */
+    size_t klen = key_match_len(key);
+    if (klen == 0)
+        return -1; /* an empty (or all-'*') key can never match -- "+"<nothing>,
+                    * "+*note", and a bare empty code are all degenerate
+                    * inputs no real field-book code would key a line by;
+                    * treating them as "never matches" keeps this
+                    * function's contract simple rather than special-
+                    * casing a key nobody will actually type */
 
     for (uint32_t i = 0; i < set->count; i++) {
-        if (!set->lines[i].closed && strcmp(set->lines[i].key, key) == 0)
+        /* set->lines[i].key was itself already stored '*'-truncated
+         * (see the CODE_KIND_OPEN branch in breaklines_build() below),
+         * so comparing it against key's own truncated length is enough
+         * -- no need to re-truncate the stored side here. */
+        if (!set->lines[i].closed
+            && strlen(set->lines[i].key) == klen
+            && strncmp(set->lines[i].key, key, klen) == 0)
             return (int32_t)i;
     }
     return -1;
@@ -106,8 +130,13 @@ void breaklines_build(const MeasurePointStore *store, BreaklineSet *out)
              * vertex. Anything else (different text, or empty) is an
              * ordinary unconnected point and is simply not added to any
              * line -- see this header's file-level doc comment on the
-             * "TREE in the middle of an RCPF line" case Alex confirmed. */
-            if (key[0] == '\0')
+             * "TREE in the middle of an RCPF line" case Alex confirmed.
+             * key_match_len() (not key[0] == '\0') is the right emptiness
+             * check here so a code that's ALL '*' suffix (e.g. "*note",
+             * no real code text before the '*') is treated the same as
+             * a truly empty code -- see this header's file-level doc
+             * comment on the '*' convention. */
+            if (key_match_len(key) == 0)
                 continue;
 
             int32_t idx = find_open_line(out, key);
@@ -128,10 +157,12 @@ void breaklines_build(const MeasurePointStore *store, BreaklineSet *out)
         }
 
         if (kind == CODE_KIND_OPEN) {
-            if (key[0] == '\0')
-                continue; /* a bare "+" with no key text -- nothing to key
-                           * a line by; treated as a plain point (no key
-                           * to assign) rather than crashing or guessing */
+            size_t klen = key_match_len(key);
+            if (klen == 0)
+                continue; /* a bare "+" with no key text (or "+*note", all
+                           * suffix) -- nothing to key a line by; treated
+                           * as a plain point (no key to assign) rather
+                           * than crashing or guessing */
 
             /* Opening with a key that already has an OPEN line is not
              * itself rejected -- find_open_line() above would have
@@ -154,7 +185,12 @@ void breaklines_build(const MeasurePointStore *store, BreaklineSet *out)
 
             Breakline *line = &out->lines[out->count];
             memset(line, 0, sizeof(*line));
-            snprintf(line->key, sizeof(line->key), "%s", key);
+            /* Store the key already '*'-truncated -- "%.*s" with
+             * klen bytes of key, not the full (possibly suffixed)
+             * string, so find_open_line()'s later strncmp() against
+             * this stored key needs no truncation of its own (see
+             * that function's own comment). */
+            snprintf(line->key, sizeof(line->key), "%.*s", (int)klen, key);
             line->vertex_indices[0] = i;
             line->vertex_count = 1;
             line->closed = false;
@@ -163,9 +199,10 @@ void breaklines_build(const MeasurePointStore *store, BreaklineSet *out)
         }
 
         /* CODE_KIND_CLOSE */
-        if (key[0] == '\0')
-            continue; /* bare "-" with no key text -- same non-key-able
-                       * case as a bare "+" above */
+        if (key_match_len(key) == 0)
+            continue; /* bare "-" with no key text (or "-*note", all
+                       * suffix) -- same non-key-able case as a bare "+"
+                       * above */
 
         int32_t idx = find_open_line(out, key);
         if (idx < 0)

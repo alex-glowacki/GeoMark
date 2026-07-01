@@ -57,6 +57,14 @@ static const char *status_text(ExportScreenStatus status, ExportMsgKind *out_kin
     case EXPORT_SCREEN_STATUS_CSV_OK_FALLBACK:
         *out_kind = EXPORT_MSG_FALLBACK;
         return "USB drive not found -- CSV saved internally instead";
+    case EXPORT_SCREEN_STATUS_TXT_ERROR:
+        return "PNEZD TXT export failed -- check storage";
+    case EXPORT_SCREEN_STATUS_TXT_OK:
+        *out_kind = EXPORT_MSG_SUCCESS;
+        return "PNEZD TXT exported to USB drive";
+    case EXPORT_SCREEN_STATUS_TXT_OK_FALLBACK:
+        *out_kind = EXPORT_MSG_FALLBACK;
+        return "USB drive not found -- PNEZD TXT saved internally instead";
     case EXPORT_SCREEN_STATUS_NONE:
     default:
         return NULL;

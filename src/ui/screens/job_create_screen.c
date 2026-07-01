@@ -59,7 +59,7 @@ static const char *const COORD_SYS_OPTIONS[] = {
     "WGS84 Geographic",
     "UTM (auto zone)",
     "Local / Site Ground",
-    "NAD83 ND North (EPSG:2265)",
+    "NAD83 ND North (EPSG:2265 / FIPS 3301)",
 };
 #define COORD_SYS_OPTION_COUNT 4
 

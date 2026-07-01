@@ -14,6 +14,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <time.h>
 
 #include "util/log.h"
 #include "util/units.h"
@@ -51,7 +52,7 @@ static const char *const EXPORT_COORD_SYS_NAMES[] = {
     "WGS84 Geographic",
     "UTM (auto zone)",
     "Local / Site Ground",
-    "NAD83(1986) ND State Plane North (EPSG:2265)",
+    "NAD83(1986) ND State Plane North (EPSG:2265 / FIPS 3301)",
 };
 
 /* -------------------------------------------------------------------------
@@ -68,24 +69,26 @@ void measure_points_export_pnezd_path(const char *job_dir, char *buf, size_t buf
     snprintf(buf, buf_len, "%s/export/points_pnezd.csv", job_dir);
 }
 
+void measure_points_export_txt_path(const char *job_dir, char *buf, size_t buf_len)
+{
+    snprintf(buf, buf_len, "%s/export/points_pnezd.txt", job_dir);
+}
+
 /* -------------------------------------------------------------------------
- * Shared projection + unit conversion
+ * Shared projection + unit conversion + localization correction
  *
- * Returns projected northing/easting in the job's chosen foot unit
- * and elevation always in International Foot. See measure_points_
- * export.h's file-level doc comment for the full unit-handling rules.
+ * See measure_points_export.h's own doc comment for
+ * MeasurePointsProjectedFt/measure_points_project_ft() -- this is the
+ * ONE place projection, foot-unit conversion, and a point's own
+ * dn_ft/de_ft/dz_ft localization correction are combined; every export
+ * format below calls this rather than duplicating any part of it, and
+ * so does measure_points_screen_draw.c's map panel.
  * ---------------------------------------------------------------------- */
 
-typedef struct {
-    double northing;      /* job foot unit (Int'l or US Survey) */
-    double easting;       /* job foot unit (Int'l or US Survey) */
-    double elevation_ft;  /* always International Foot */
-} ExportedPoint;
-
-static gm_status_t project_for_export(const MeasurePoint *pt,
+gm_status_t measure_points_project_ft(const MeasurePoint *pt,
                                       const gm_job_metadata_t *job_meta,
                                       double origin_lat, double origin_lon,
-                                      ExportedPoint *out)
+                                      MeasurePointsProjectedFt *out)
 {
     MeasurePointsProjected proj;
     gm_status_t rc = measure_points_project(job_meta, pt->lat, pt->lon,
@@ -116,6 +119,17 @@ static gm_status_t project_for_export(const MeasurePoint *pt,
      * doc comment). Always convert to International Foot for elevation,
      * matching units.h's own convention. */
     out->elevation_ft = gm_m_to_intl_ft(pt->alt);
+
+    /* The localization correction that was active when pt was
+     * captured -- 0.0/0.0/0.0 for any point captured before a
+     * localization was ever performed on this job (memset() in
+     * measure_points_load_csv()/on_capture_point() already establishes
+     * this default), so this addition is a silent no-op for every job
+     * that never uses the feature. */
+    out->northing     += pt->dn_ft;
+    out->easting       += pt->de_ft;
+    out->elevation_ft  += pt->dz_ft;
+
     return GM_OK;
 }
 
@@ -228,8 +242,8 @@ gm_status_t measure_points_export_landxml(const char *path,
     for (uint32_t i = 0; i < store->count; i++) {
         const MeasurePoint *pt = &store->points[i];
 
-        ExportedPoint ep;
-        if (project_for_export(pt, job_meta, origin_lat, origin_lon, &ep) != GM_OK) {
+        MeasurePointsProjectedFt ep;
+        if (measure_points_project_ft(pt, job_meta, origin_lat, origin_lon, &ep) != GM_OK) {
             log_warn("measure_points_export_landxml: point #%u failed to project"
                      " -- skipped", pt->point_num);
             continue;
@@ -262,7 +276,7 @@ gm_status_t measure_points_export_landxml(const char *path,
  * point import format -- File > Import > Import Points, format
  * "PNEZD (comma delimited)".
  *
- * All coordinate values are in feet (see project_for_export() above).
+ * All coordinate values are in feet (see measure_points_project_ft() above).
  * The Description column (point code) is written via write_csv_safe()
  * to prevent formula injection in spreadsheet tools (see that
  * function's doc comment).
@@ -292,8 +306,8 @@ gm_status_t measure_points_export_pnezd(const char *path,
     for (uint32_t i = 0; i < store->count; i++) {
         const MeasurePoint *pt = &store->points[i];
 
-        ExportedPoint ep;
-        if (project_for_export(pt, job_meta, origin_lat, origin_lon, &ep) != GM_OK) {
+        MeasurePointsProjectedFt ep;
+        if (measure_points_project_ft(pt, job_meta, origin_lat, origin_lon, &ep) != GM_OK) {
             log_warn("measure_points_export_pnezd: point #%u failed to project"
                      " -- skipped", pt->point_num);
             continue;
@@ -311,6 +325,163 @@ gm_status_t measure_points_export_pnezd(const char *path,
 
     fclose(f);
     log_info("measure_points_export_pnezd: wrote %u point(s) to '%s'",
+             store->count, path);
+    return GM_OK;
+}
+
+/* -------------------------------------------------------------------------
+ * PNEZD TXT export
+ *
+ * Same projected coordinates and Description-column safety as
+ * measure_points_export_pnezd() above, preceded by a human-readable
+ * metadata header block and written with CRLF line endings throughout,
+ * matching the shape of the reference export Alex supplied
+ * (TOPO_EXPORT_EXAMPLE.txt). See measure_points_export.h's file-level
+ * doc comment for the full Datum/Geoid caveat this header carries --
+ * this is a documentation/handoff format for a human reader, not a
+ * second machine-import format.
+ * ---------------------------------------------------------------------- */
+
+/** CRLF-terminated fputs -- every header line in this format ends
+ *  "\r\n", never a bare "\n" (confirmed against TOPO_EXPORT_EXAMPLE.txt's
+ *  own raw bytes: every line, including blank ones, ends CRLF). */
+static void write_crlf_line(FILE *f, const char *s)
+{
+    fputs(s, f);
+    fputs("\r\n", f);
+}
+
+/**
+ * "Modified: MM/DD/YYYY HH:MM:SS AM/PM (UTC:offset)" -- matches
+ * TOPO_EXPORT_EXAMPLE.txt's own timestamp line exactly in shape. Uses
+ * the device's local time and its current local UTC offset (computed
+ * from the difference between localtime() and gmtime() of the same
+ * instant, rather than trusting struct tm::tm_gmtoff -- glibc provides
+ * tm_gmtoff but it isn't in the C11 standard this project builds
+ * against, see CMakeLists.txt's -std=c11 -- so this stays portable to
+ * any C11 libc). Offset is written as a bare signed integer hour count
+ * ("-5", "+1"), matching the reference file's own "(UTC:-5)" -- no
+ * fractional-hour timezones are handled (none of GeoMark's real
+ * deployment locations use one).
+ */
+static void format_modified_line(char *buf, size_t buf_len)
+{
+    time_t now = time(NULL);
+    struct tm local_tm, utc_tm;
+    localtime_r(&now, &local_tm);
+    gmtime_r(&now, &utc_tm);
+
+    char stamp[32];
+    strftime(stamp, sizeof(stamp), "%m/%d/%Y %I:%M:%S %p", &local_tm);
+
+    /* Whole-hour UTC offset via a wall-clock diff of the two broken-down
+     * times' seconds-since-epoch equivalents -- mktime() interprets its
+     * argument as LOCAL time, so mktime(&local_tm) recovers `now`
+     * itself, and mktime(&utc_tm) (treating the UTC fields as if they
+     * were local) recovers `now` shifted by exactly the local UTC
+     * offset. The difference is that offset, in seconds. */
+    struct tm local_copy = local_tm, utc_copy = utc_tm;
+    double offset_sec = difftime(mktime(&local_copy), mktime(&utc_copy));
+    int offset_hours = (int)(offset_sec / 3600.0);
+
+    snprintf(buf, buf_len, "Modified: %s (UTC:%+d)", stamp, offset_hours);
+}
+
+gm_status_t measure_points_export_txt(const char *path,
+                                      const MeasurePointStore *store,
+                                      const gm_job_metadata_t *job_meta,
+                                      double origin_lat, double origin_lon)
+{
+    if (!store || !job_meta)
+        return GM_ERR_GENERIC;
+
+    if (!ensure_export_dir_for(path))
+        return GM_ERR_IO;
+
+    FILE *f = fopen(path, "w");
+    if (!f) {
+        log_error("measure_points_export_txt: cannot open '%s': %s",
+                  path, strerror(errno));
+        return GM_ERR_IO;
+    }
+
+    /* --- Header block ---------------------------------------------- */
+
+    char line[256];
+
+    snprintf(line, sizeof(line), "Name: %s",
+             job_meta->job_name[0] != '\0' ? job_meta->job_name : "<unnamed job>");
+    write_crlf_line(f, line);
+
+    if (job_meta->coord_sys == GM_COORD_SYS_ND_NORTH) {
+        write_crlf_line(f, "Name: United States/NAD83");
+        write_crlf_line(f, "Zone: North Dakota North 3301");
+    } else {
+        /* Every other coord_sys has no State Plane zone -- write what
+         * it actually is rather than a fabricated zone name. See
+         * job_metadata.h's GM_COORD_SYS_* doc comment for what each
+         * of these actually resolves to. */
+        static const char *const zone_names[] = {
+            "WGS84 Geographic (no State Plane zone)",
+            "UTM, auto zone (no State Plane zone)",
+            "Local / Site Ground (no State Plane zone)",
+        };
+        write_crlf_line(f, zone_names[(unsigned)job_meta->coord_sys < 3
+                                       ? (unsigned)job_meta->coord_sys : 0]);
+    }
+
+    format_modified_line(line, sizeof(line));
+    write_crlf_line(f, line);
+
+    /* CAVEAT -- see measure_points_export.h's file-level doc comment
+     * before changing either of the next two lines. "(1986)" matches
+     * the specific NAD83 realization collector/coords.c's own Lambert
+     * projection constants are documented against; the Geoid/Vertical
+     * datum lines are informational placeholders, not a verified claim
+     * about the UM980's own internal geoid model. */
+    write_crlf_line(f, "Datum: NAD83(1986)");
+
+    snprintf(line, sizeof(line), "Reference number: %s",
+             job_meta->reference[0] != '\0' ? job_meta->reference : "");
+    write_crlf_line(f, line);
+
+    snprintf(line, sizeof(line), "Description: %s",
+             job_meta->description[0] != '\0' ? job_meta->description : "");
+    write_crlf_line(f, line);
+
+    write_crlf_line(f, "Geoid: (per receiver firmware -- not independently verified)");
+    write_crlf_line(f, "Vertical datum: NAVD88 (assumes receiver's onboard geoid model)");
+
+    write_crlf_line(f,
+        job_meta->dist_unit == GM_DIST_UNIT_US_SURVEY_FOOT
+            ? "Units: US Survey Feet" : "Units: International Feet");
+
+    write_crlf_line(f, "GRID Coordinates   Scale Factor: 1.0000000000");
+    write_crlf_line(f, "");
+    write_crlf_line(f, "");
+    write_crlf_line(f, "");
+
+    /* --- Data rows: identical PNEZD columns/safety as the CSV export,
+     * CRLF-terminated instead of LF. ------------------------------- */
+
+    for (uint32_t i = 0; i < store->count; i++) {
+        const MeasurePoint *pt = &store->points[i];
+
+        MeasurePointsProjectedFt ep;
+        if (measure_points_project_ft(pt, job_meta, origin_lat, origin_lon, &ep) != GM_OK) {
+            log_warn("measure_points_export_txt: point #%u failed to project"
+                     " -- skipped", pt->point_num);
+            continue;
+        }
+
+        fprintf(f, "%u,%.4f,%.4f,%.4f,", pt->point_num,
+                ep.northing, ep.easting, ep.elevation_ft);
+        write_csv_safe(f, pt->code);
+        fputs("\r\n", f);
+    }
+
+    fclose(f);
+    log_info("measure_points_export_txt: wrote %u point(s) to '%s'",
              store->count, path);
     return GM_OK;
 }

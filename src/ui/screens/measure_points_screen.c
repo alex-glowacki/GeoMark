@@ -26,6 +26,7 @@
 #include <string.h>
 #include <time.h>
 
+#include "collector/measure_points_export.h"
 #include "util/log.h"
 #include "util/units.h"
 
@@ -93,6 +94,21 @@ static void set_active_field(MeasurePointsScreenCtx *ctx, MeasurePointsActiveFie
         ctx->kb.buf_cap = sizeof(ctx->height_buf);
         ctx->kb.len     = &ctx->height_len;
         break;
+    case MEASURE_POINTS_FIELD_LOC_N:
+        ctx->kb.buf     = ctx->loc_n_buf;
+        ctx->kb.buf_cap = sizeof(ctx->loc_n_buf);
+        ctx->kb.len     = &ctx->loc_n_len;
+        break;
+    case MEASURE_POINTS_FIELD_LOC_E:
+        ctx->kb.buf     = ctx->loc_e_buf;
+        ctx->kb.buf_cap = sizeof(ctx->loc_e_buf);
+        ctx->kb.len     = &ctx->loc_e_len;
+        break;
+    case MEASURE_POINTS_FIELD_LOC_Z:
+        ctx->kb.buf     = ctx->loc_z_buf;
+        ctx->kb.buf_cap = sizeof(ctx->loc_z_buf);
+        ctx->kb.len     = &ctx->loc_z_len;
+        break;
     case MEASURE_POINTS_FIELD_NONE:
     default:
         ctx->kb.buf = NULL;
@@ -120,6 +136,27 @@ static void on_height_activate(UiWidget *self, void *screen_ctx)
     (void)self;
     MeasurePointsScreenCtx *ctx = (MeasurePointsScreenCtx *)screen_ctx;
     set_active_field(ctx, MEASURE_POINTS_FIELD_HEIGHT);
+    show_keyboard(ctx);
+}
+static void on_loc_n_activate(UiWidget *self, void *screen_ctx)
+{
+    (void)self;
+    MeasurePointsScreenCtx *ctx = (MeasurePointsScreenCtx *)screen_ctx;
+    set_active_field(ctx, MEASURE_POINTS_FIELD_LOC_N);
+    show_keyboard(ctx);
+}
+static void on_loc_e_activate(UiWidget *self, void *screen_ctx)
+{
+    (void)self;
+    MeasurePointsScreenCtx *ctx = (MeasurePointsScreenCtx *)screen_ctx;
+    set_active_field(ctx, MEASURE_POINTS_FIELD_LOC_E);
+    show_keyboard(ctx);
+}
+static void on_loc_z_activate(UiWidget *self, void *screen_ctx)
+{
+    (void)self;
+    MeasurePointsScreenCtx *ctx = (MeasurePointsScreenCtx *)screen_ctx;
+    set_active_field(ctx, MEASURE_POINTS_FIELD_LOC_Z);
     show_keyboard(ctx);
 }
 
@@ -236,13 +273,27 @@ static void show_keyboard(MeasurePointsScreenCtx *ctx)
 static void hide_keyboard(MeasurePointsScreenCtx *ctx)
 {
     /* Idempotent by construction: if overlay is already NONE or is the
-     * code picker (not the keyboard), this still safely lands on NONE
-     * -- there is no path here that could ever re-show a hidden
-     * keyboard, satisfying the "hide is a one-way action, never a
-     * toggle" requirement this function's callers (Done, the toggle
-     * button when already showing) depend on. */
-    if (ctx->overlay == MEASURE_POINTS_OVERLAY_KEYBOARD)
-        ctx->overlay = MEASURE_POINTS_OVERLAY_NONE;
+     * code picker (not the keyboard), this still safely lands
+     * somewhere with no keyboard showing -- there is no path here that
+     * could ever re-show a hidden keyboard, satisfying the "hide is a
+     * one-way action, never a toggle" requirement this function's
+     * callers (Done, the toggle button when already showing) depend
+     * on. Returns to MEASURE_POINTS_OVERLAY_LOCALIZE rather than NONE
+     * when one of the three Localize fields was what the keyboard was
+     * editing (rebuild_grid()'s own KEYBOARD case picks the SAME
+     * add_localize_widgets()-vs-add_base_widgets() field set by
+     * checking this same active_field condition, so this mirrors that
+     * -- the keyboard must close back to whichever overlay it was
+     * opened from, not unconditionally to the base screen). */
+    if (ctx->overlay == MEASURE_POINTS_OVERLAY_KEYBOARD) {
+        if (ctx->active_field == MEASURE_POINTS_FIELD_LOC_N ||
+            ctx->active_field == MEASURE_POINTS_FIELD_LOC_E ||
+            ctx->active_field == MEASURE_POINTS_FIELD_LOC_Z) {
+            ctx->overlay = MEASURE_POINTS_OVERLAY_LOCALIZE;
+        } else {
+            ctx->overlay = MEASURE_POINTS_OVERLAY_NONE;
+        }
+    }
     rebuild_grid(ctx);
 }
 
@@ -322,6 +373,18 @@ static void on_capture_point(UiWidget *self, void *screen_ctx)
     pt.hdop            = ctx->latest.hdop;
     pt.num_sats        = ctx->latest.num_sats;
     pt.timestamp       = time(NULL);
+    /* Bake in whatever localization correction is ACTIVE right now --
+     * see measure_points_screen.h's file-level "Localize" doc comment
+     * and MeasurePoint::dn_ft's own doc comment (measure_points.h) for
+     * why this happens per-point, at capture time, rather than being
+     * applied later from a single job-wide value. 0.0/0.0/0.0 (memset
+     * above already establishes this) if no localization has been
+     * performed yet this session. */
+    if (ctx->have_localization) {
+        pt.dn_ft = ctx->active_dn_ft;
+        pt.de_ft = ctx->active_de_ft;
+        pt.dz_ft = ctx->active_dz_ft;
+    }
     snprintf(pt.name, sizeof(pt.name), "%.*s", (int)sizeof(pt.name) - 1, ctx->name_buf);
     snprintf(pt.code, sizeof(pt.code), "%.*s", (int)sizeof(pt.code) - 1, ctx->code_buf);
 
@@ -359,6 +422,130 @@ static void on_export_activate(UiWidget *self, void *screen_ctx)
     (void)self;
     MeasurePointsScreenCtx *ctx = (MeasurePointsScreenCtx *)screen_ctx;
     ui_stack_push(ctx->stack, ctx->export_screen);
+}
+
+/* -------------------------------------------------------------------------
+ * Localize overlay -- see measure_points_screen.h's file-level
+ * "Localize" doc comment for the full mechanism and why the resulting
+ * correction is in-memory-only, session-scoped state.
+ * ---------------------------------------------------------------------- */
+
+#define MP_LOC_FIELD_MARGIN 12
+#define MP_LOC_FIELD_H 26
+#define MP_LOC_FIELD_GAP 8
+#define MP_LOC_FIELD_W (800 - 2 * MP_LOC_FIELD_MARGIN)
+#define MP_LOC_APPLY_H 32
+
+/* Row Y positions within the overlay region -- title banner drawn in
+ * measure_points_screen_draw.c occupies MP_OVERLAY_TOP_Y..+22 (same
+ * convention add_point_list_buttons() above already uses), so the
+ * first field starts at +28 to clear it. */
+static void add_localize_widgets(MeasurePointsScreenCtx *ctx)
+{
+    uint16_t y = (uint16_t)(MP_OVERLAY_TOP_Y + 28);
+
+    UiRect n_r = { MP_LOC_FIELD_MARGIN, y, MP_LOC_FIELD_W, MP_LOC_FIELD_H };
+    UiWidget *n_w = ui_grid_add_text_field(&ctx->grid, n_r, "Known Northing (ft)",
+                                           ctx->loc_n_buf, sizeof(ctx->loc_n_buf));
+    if (n_w) n_w->on_activate = on_loc_n_activate;
+    y = (uint16_t)(y + MP_LOC_FIELD_H + MP_LOC_FIELD_GAP);
+
+    UiRect e_r = { MP_LOC_FIELD_MARGIN, y, MP_LOC_FIELD_W, MP_LOC_FIELD_H };
+    UiWidget *e_w = ui_grid_add_text_field(&ctx->grid, e_r, "Known Easting (ft)",
+                                           ctx->loc_e_buf, sizeof(ctx->loc_e_buf));
+    if (e_w) e_w->on_activate = on_loc_e_activate;
+    y = (uint16_t)(y + MP_LOC_FIELD_H + MP_LOC_FIELD_GAP);
+
+    UiRect z_r = { MP_LOC_FIELD_MARGIN, y, MP_LOC_FIELD_W, MP_LOC_FIELD_H };
+    UiWidget *z_w = ui_grid_add_text_field(&ctx->grid, z_r, "Known Elevation (ft)",
+                                           ctx->loc_z_buf, sizeof(ctx->loc_z_buf));
+    if (z_w) z_w->on_activate = on_loc_z_activate;
+
+    /* "Capture & Apply" is intentionally NOT added here -- same
+     * "not present while the keyboard covers the screen" field-safety
+     * reasoning add_base_widgets()'s own doc comment gives for Capture
+     * Point: added by rebuild_grid() itself, only in the standalone
+     * MEASURE_POINTS_OVERLAY_LOCALIZE case, never behind the keyboard. */
+}
+
+static void on_localize_activate(UiWidget *self, void *screen_ctx)
+{
+    (void)self;
+    MeasurePointsScreenCtx *ctx = (MeasurePointsScreenCtx *)screen_ctx;
+    ctx->overlay = MEASURE_POINTS_OVERLAY_LOCALIZE;
+    rebuild_grid(ctx);
+}
+
+/**
+ * "Capture & Apply": reads the live fix exactly like Capture Point
+ * does, projects it (raw, no correction -- a fresh MeasurePoint with
+ * dn_ft/de_ft/dz_ft all 0.0), parses the three typed known-coordinate
+ * fields, and stores (known - raw) as this screen's new active
+ * correction. Does NOT add a point to the store -- the known-point
+ * shot itself is a calibration action, not a survey point (if the
+ * crew also wants it recorded as a real point, e.g. to visualize on
+ * the map, they can press ordinary Capture Point for it separately,
+ * before or after localizing).
+ */
+static void on_localize_capture_activate(UiWidget *self, void *screen_ctx)
+{
+    (void)self;
+    MeasurePointsScreenCtx *ctx = (MeasurePointsScreenCtx *)screen_ctx;
+
+    if (!ctx->latest.valid) {
+        ctx->status = MEASURE_POINTS_STATUS_LOCALIZE_NO_FIX;
+        return;
+    }
+
+    /* atof() returns 0.0 for a string with no valid number, same as
+     * every other typed-numeric-field convention in this codebase
+     * (Target height, etc.) -- but 0.0 is also a plausible real
+     * Northing/Easting/Elevation, so an empty/unparseable field here
+     * must be rejected explicitly rather than silently treated as
+     * "the known coordinate is 0.0", which would compute a wildly
+     * wrong correction instead of failing loudly. */
+    if (ctx->loc_n_len == 0 || ctx->loc_e_len == 0 || ctx->loc_z_len == 0) {
+        ctx->status = MEASURE_POINTS_STATUS_LOCALIZE_BAD_INPUT;
+        return;
+    }
+    double known_n = atof(ctx->loc_n_buf);
+    double known_e = atof(ctx->loc_e_buf);
+    double known_z = atof(ctx->loc_z_buf);
+
+    MeasurePoint raw_pt;
+    memset(&raw_pt, 0, sizeof(raw_pt)); /* dn_ft/de_ft/dz_ft = 0.0 -- this
+                                         * projection must be uncorrected,
+                                         * it's what the correction itself
+                                         * is computed FROM */
+    raw_pt.lat = ctx->latest.lat;
+    raw_pt.lon = ctx->latest.lon;
+    raw_pt.alt = ctx->latest.alt; /* no target-height correction for a
+                                   * localization shot -- the crew reads
+                                   * the known point's own published/
+                                   * surveyed elevation, which already
+                                   * accounts for however THEY occupied
+                                   * it; GeoMark has no rod-height entry
+                                   * in this overlay by design */
+
+    MeasurePointsProjectedFt raw_proj;
+    gm_status_t rc = measure_points_project_ft(&raw_pt, &ctx->job_meta,
+                                               ctx->origin_lat, ctx->origin_lon,
+                                               &raw_proj);
+    if (rc != GM_OK) {
+        ctx->status = MEASURE_POINTS_STATUS_LOCALIZE_BAD_INPUT;
+        return;
+    }
+
+    ctx->active_dn_ft     = known_n - raw_proj.northing;
+    ctx->active_de_ft     = known_e - raw_proj.easting;
+    ctx->active_dz_ft     = known_z - raw_proj.elevation_ft;
+    ctx->have_localization = true;
+
+    ctx->overlay = MEASURE_POINTS_OVERLAY_NONE;
+    ctx->status  = MEASURE_POINTS_STATUS_LOCALIZE_OK;
+    rebuild_grid(ctx);
+    log_info("measure_points: localization applied (dN=%.4f dE=%.4f dZ=%.4f ft)",
+             ctx->active_dn_ft, ctx->active_de_ft, ctx->active_dz_ft);
 }
 
 /* -------------------------------------------------------------------------
@@ -572,11 +759,24 @@ static void rebuild_grid(MeasurePointsScreenCtx *ctx)
 
     switch (ctx->overlay) {
     case MEASURE_POINTS_OVERLAY_KEYBOARD:
-        add_base_widgets(ctx);
-        /* Added after add_base_widgets() so ui_grid_focus_first() still
-         * lands on Point name (the first focusable widget), not here --
-         * same focus-order reasoning as new_project_screen.c's own
-         * back-button placement comment. */
+        /* Which field set sits behind the keyboard depends on which
+         * field is actually being edited -- the three Localize fields
+         * (FIELD_LOC_N/E/Z) get add_localize_widgets(), everything else
+         * gets the screen's normal add_base_widgets(). This is the same
+         * "one KEYBOARD overlay state, two different field sets behind
+         * it" mechanism, chosen over a second LOCALIZE_KEYBOARD overlay
+         * value to avoid duplicating the keyboard-wiring case entirely. */
+        if (ctx->active_field == MEASURE_POINTS_FIELD_LOC_N ||
+            ctx->active_field == MEASURE_POINTS_FIELD_LOC_E ||
+            ctx->active_field == MEASURE_POINTS_FIELD_LOC_Z) {
+            add_localize_widgets(ctx);
+        } else {
+            add_base_widgets(ctx);
+        }
+        /* Added after the field widgets so ui_grid_focus_first() still
+         * lands on the first field, not here -- same focus-order
+         * reasoning as new_project_screen.c's own back-button placement
+         * comment. */
         ui_grid_add_back_button(&ctx->grid, on_back);
         keyboard_add_to_grid(&ctx->grid, &ctx->kb_labels);
         break;
@@ -595,6 +795,19 @@ static void rebuild_grid(MeasurePointsScreenCtx *ctx)
         add_point_list_buttons(ctx);
         break;
 
+    case MEASURE_POINTS_OVERLAY_LOCALIZE:
+        add_localize_widgets(ctx);
+        ui_grid_add_back_button(&ctx->grid, on_back);
+        {
+            UiRect apply_r = { MP_LOC_FIELD_MARGIN,
+                               (uint16_t)(MP_OVERLAY_TOP_Y + 28
+                                          + 3 * (MP_LOC_FIELD_H + MP_LOC_FIELD_GAP)),
+                               MP_LOC_FIELD_W, MP_LOC_APPLY_H };
+            ui_grid_add_button(&ctx->grid, apply_r, "Capture & Apply",
+                               on_localize_capture_activate);
+        }
+        break;
+
     case MEASURE_POINTS_OVERLAY_NONE:
     default: {
         add_base_widgets(ctx);
@@ -603,13 +816,21 @@ static void rebuild_grid(MeasurePointsScreenCtx *ctx)
                              MP_NAME_W, MP_CAPTURE_H };
         ui_grid_add_button(&ctx->grid, capture_r, "Capture Point", on_capture_point);
 
-        UiRect export_r = { STATUS_PANEL_X + MP_FIELD_MARGIN, MP_EXPORT_Y,
-                            MP_NAME_W, MP_EXPORT_H };
+        /* Export / Points / Localize share one row -- see MP_ACTION_ROW_Y's
+         * own doc comment (measure_points_screen.h) for why there's no
+         * room for a third stacked row. */
+        uint16_t btn0_x = STATUS_PANEL_X + MP_FIELD_MARGIN;
+        uint16_t btn1_x = (uint16_t)(btn0_x + MP_ACTION_BTN_W + MP_ACTION_GAP);
+        uint16_t btn2_x = (uint16_t)(btn1_x + MP_ACTION_BTN_W + MP_ACTION_GAP);
+
+        UiRect export_r = { btn0_x, MP_EXPORT_Y, MP_ACTION_BTN_W, MP_EXPORT_H };
         ui_grid_add_button(&ctx->grid, export_r, "Export", on_export_activate);
 
-        UiRect pts_r = { STATUS_PANEL_X + MP_FIELD_MARGIN, MP_POINTS_LIST_Y,
-                         MP_NAME_W, MP_POINTS_LIST_H };
+        UiRect pts_r = { btn1_x, MP_POINTS_LIST_Y, MP_ACTION_BTN_W, MP_POINTS_LIST_H };
         ui_grid_add_button(&ctx->grid, pts_r, "Points", on_points_list_activate);
+
+        UiRect loc_r = { btn2_x, MP_LOCALIZE_Y, MP_ACTION_BTN_W, MP_LOCALIZE_H };
+        ui_grid_add_button(&ctx->grid, loc_r, "Localize", on_localize_activate);
         break;
     }
     }
@@ -680,6 +901,15 @@ static void reload_job_data(MeasurePointsScreenCtx *ctx)
     measure_points_init(&ctx->points);
     job_metadata_defaults(&ctx->job_meta);
 
+    /* A fresh (re)entry to this screen is a new session by definition
+     * -- see measure_points_screen.h's file-level "Localize" doc
+     * comment on why any previously-active correction must NOT survive
+     * this. The crew re-localizes at the start of each session. */
+    ctx->have_localization = false;
+    ctx->active_dn_ft = 0.0;
+    ctx->active_de_ft = 0.0;
+    ctx->active_dz_ft = 0.0;
+
     if (!ctx->job_ctx || !job_context_has_job(ctx->job_ctx)) {
         ctx->status = MEASURE_POINTS_STATUS_NO_JOB;
         return;
@@ -696,6 +926,19 @@ static void reload_job_data(MeasurePointsScreenCtx *ctx)
         ctx->status = MEASURE_POINTS_STATUS_LOAD_ERROR;
         return;
     }
+
+    /* Unconditionally rewrite points.csv in the current format --
+     * upgrades a job whose file predates the dn_ft/de_ft/dz_ft columns
+     * (see measure_points.h's file-level CSV persistence doc comment)
+     * so that measure_points_append_csv()'s later per-point appends
+     * are always writing onto a header that already matches. A no-op
+     * (byte-identical rewrite) for a file already in the current
+     * format, so this costs nothing in the common case. Best-effort --
+     * a failure here does not block the screen from opening; the next
+     * successful write (rewrite_csv() from a delete, or the eventual
+     * append_csv() from a capture) will retry it. Reached only when rc
+     * == GM_OK (the two failure returns above already exited). */
+    measure_points_rewrite_csv(csv_path, &ctx->points);
 
     if (ctx->points.count > 0) {
         ctx->origin_lat  = ctx->points.points[0].lat;

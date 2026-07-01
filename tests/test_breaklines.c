@@ -390,6 +390,113 @@ static void test_build_is_deterministic(void)
 }
 
 /* =========================================================================
+ * '*' detail-suffix convention: Alex's own worked example from the
+ * GeoMark request that introduced this feature -- "+GRV, GRV*4in thick,
+ * GRV, -GRV*end of gravel" builds one open-then-closed GRV line with 4
+ * vertices, identical to the same sequence with every '*' suffix
+ * stripped. See breaklines.h's file-level doc comment for the full
+ * convention.
+ * ========================================================================= */
+
+static void test_asterisk_worked_example(void)
+{
+    MeasurePointStore store;
+    measure_points_init(&store);
+    add_point(&store, "1", "+GRV");                 /* 0 -- opens GRV */
+    add_point(&store, "2", "GRV*4in thick");         /* 1 -- plain match, key-truncated at '*' */
+    add_point(&store, "3", "GRV");                   /* 2 -- plain match, no suffix */
+    add_point(&store, "4", "-GRV*end of gravel");    /* 3 -- closes GRV, key-truncated at '*' */
+
+    BreaklineSet set;
+    breaklines_build(&store, &set);
+
+    ASSERT(set.count == 1, "Exactly one line is built, matching '+GRV'/'GRV'/'-GRV' with no '*'");
+    const Breakline *line = find_line(&set, "GRV");
+    ASSERT(line != NULL, "The line is keyed by \"GRV\" -- the '*' suffix never reaches the key");
+    if (!line) return;
+    ASSERT(line->closed, "The line closes on the '-GRV*end of gravel' vertex");
+    ASSERT(line->vertex_count == 4, "All 4 points are vertices -- '*' suffixes don't break the line");
+    if (line->vertex_count == 4) {
+        ASSERT(line->vertex_indices[0] == 0, "Vertex 0 is the '+GRV' point");
+        ASSERT(line->vertex_indices[1] == 1, "Vertex 1 is 'GRV*4in thick', matched despite its suffix");
+        ASSERT(line->vertex_indices[2] == 2, "Vertex 2 is the plain 'GRV' point");
+        ASSERT(line->vertex_indices[3] == 3, "Vertex 3 is '-GRV*end of gravel', matched despite its suffix");
+    }
+}
+
+/* =========================================================================
+ * The full suffix text (including the '*' itself) is never touched by
+ * breaklines_build() -- it only reads store->points[i].code, never
+ * writes it (see breaklines.h's determinism guarantee), so the original
+ * MeasurePoint the store holds still has the complete text for export.
+ * ========================================================================= */
+
+static void test_asterisk_suffix_is_not_stripped_from_the_store(void)
+{
+    MeasurePointStore store;
+    measure_points_init(&store);
+    add_point(&store, "1", "+GRV");
+    add_point(&store, "2", "GRV*4in thick");
+
+    BreaklineSet set;
+    breaklines_build(&store, &set);
+
+    ASSERT(strcmp(store.points[1].code, "GRV*4in thick") == 0,
+          "The store's own point 2 code is untouched -- full text, "
+          "asterisk and suffix included, still reaches export");
+}
+
+/* =========================================================================
+ * A code opening with '+' whose key is entirely suffix (e.g. "+*note",
+ * no real code text before the '*') has nothing to key a line by --
+ * treated the same as a bare "+" with no key text at all: an ordinary
+ * unconnected point, not a crash or a zero-length-keyed line.
+ * ========================================================================= */
+
+static void test_asterisk_only_key_is_unconnected(void)
+{
+    MeasurePointStore store;
+    measure_points_init(&store);
+    add_point(&store, "1", "+*note only, no real code");
+
+    BreaklineSet set;
+    breaklines_build(&store, &set);
+
+    ASSERT(set.count == 0, "A '+' with an all-'*'-suffix key builds no line at all");
+}
+
+/* =========================================================================
+ * '*' does not create false matches between two genuinely different
+ * codes that merely share a prefix -- "GRVL*compacted" must NOT match a
+ * line keyed "GRV". find_open_line()'s length-checked comparison (not a
+ * bare prefix strncmp()) is what this test actually exercises.
+ * ========================================================================= */
+
+static void test_asterisk_does_not_cause_false_prefix_match(void)
+{
+    MeasurePointStore store;
+    measure_points_init(&store);
+    add_point(&store, "1", "+GRV");             /* 0 -- opens a line keyed "GRV" */
+    add_point(&store, "2", "GRVL*compacted");   /* 1 -- different code text ("GRVL"), must NOT join */
+    add_point(&store, "3", "-GRV");             /* 2 -- closes the "GRV" line */
+
+    BreaklineSet set;
+    breaklines_build(&store, &set);
+
+    ASSERT(set.count == 1, "Only the one \"GRV\" line is built");
+    const Breakline *line = find_line(&set, "GRV");
+    ASSERT(line != NULL, "The \"GRV\" line exists");
+    if (!line) return;
+    ASSERT(line->vertex_count == 2,
+          "\"GRV\" has exactly 2 vertices (+, -) -- the \"GRVL*compacted\" "
+          "point (different key text) is NOT one of them");
+    if (line->vertex_count == 2) {
+        ASSERT(line->vertex_indices[0] == 0, "Vertex 0 is the '+GRV' point");
+        ASSERT(line->vertex_indices[1] == 2, "Vertex 1 is the '-GRV' point, not point 1 ('GRVL*compacted')");
+    }
+}
+
+/* =========================================================================
  * main
  * ========================================================================= */
 int main(void)
@@ -404,6 +511,10 @@ int main(void)
     test_degenerate_inputs_do_not_crash_or_misbuild();
     test_empty_store_builds_empty_set();
     test_build_is_deterministic();
+    test_asterisk_worked_example();
+    test_asterisk_suffix_is_not_stripped_from_the_store();
+    test_asterisk_only_key_is_unconnected();
+    test_asterisk_does_not_cause_false_prefix_match();
 
     if (g_tests_failed == 0) {
         printf("All %d breakline tests passed.\n", g_tests_run);

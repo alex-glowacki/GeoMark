@@ -22,7 +22,7 @@
  * Row contents — letters stored uppercase to match the legacy
  * survey_screen.c keyboard's on-screen convention (typed text displays
  * uppercase regardless of key label case, since there is only one case).
- * Combined length must equal KB_CHAR_KEY_COUNT (40): 10+10+10+10.
+ * Combined length must equal KB_CHAR_KEY_COUNT (41): 10+10+10+11.
  *
  * '.' lives at the end of Row 2 (ASDFGHJKL.) rather than getting a row of
  * its own: a fifth char row would overflow KEYBOARD_HEIGHT's fixed
@@ -35,7 +35,7 @@
  * doc comment for the character-set-safety reasoning.
  *
  * '+' lives at the end of Row 3 (ZXCVBNM-_+) for the identical reason:
- * it brings Row 3 up to 10 keys too, so EVERY char row now shares
+ * it brings Row 3 up to 10 keys too, so EVERY char row shares
  * KB_KEY_W/KB_ROW0_X's centering math with zero new layout case --
  * Row 3 no longer needs its own narrower-row centering offset (see
  * KB_ROW3_X below, now equal to KB_ROW0_X/_1_X/_2_X). Added so Measure
@@ -43,33 +43,52 @@
  * '-' (already present, breakline end) -- see collector/breaklines.h
  * for what these mean and keyboard.h's file-level doc comment for the
  * character-set-safety reasoning.
+ *
+ * '*' is appended after that (ZXCVBNM-_+*), bringing Row 3 to 11 keys --
+ * one more than Rows 0-2's 10, so it goes back to needing its own
+ * narrower-row centering (KB_ROW3_KEY_W/KB_ROW3_X below), reintroducing
+ * exactly the per-row offset the '+' change above had just eliminated.
+ * Added so Measure Points' Code field can type a trailing '*' to start a
+ * free-text detail suffix on an otherwise-ordinary code (e.g.
+ * "GRV*4in thick") -- see collector/breaklines.h's file-level doc
+ * comment for the full convention and keyboard.h's file-level doc
+ * comment for the character-set-safety reasoning.
  * ---------------------------------------------------------------------- */
 
 static const char *const KB_ROW0 = "1234567890";
 static const char *const KB_ROW1 = "QWERTYUIOP";
 static const char *const KB_ROW2 = "ASDFGHJKL.";
-static const char *const KB_ROW3 = "ZXCVBNM-_+";
+static const char *const KB_ROW3 = "ZXCVBNM-_+*";
 
 /* KB_KEY_H/KB_GAP_V sized so 5 rows (4 char rows + action row) fit
  * exactly within KEYBOARD_HEIGHT (232px): 5*43 + 4*3 = 227px, leaving a
  * 5px margin at the very bottom of the panel -- unchanged by the
- * full-width rework below, since adding '.' to Row 2 added a column,
- * not a row. 43px still comfortably exceeds typical minimum touch-target
- * guidance (~40px) for a capacitive panel this size.
+ * full-width rework below, since adding '.' to Row 2 (and now '*' to
+ * Row 3) added columns, not rows. 43px still comfortably exceeds
+ * typical minimum touch-target guidance (~40px) for a capacitive panel
+ * this size.
  *
  * KB_KEY_W/KB_GAP_H: full-width rework (real-hardware feedback: the
  * original 40px-wide, left-justified keys only spanned ~440px of the
  * 800px panel, leaving the right third empty and looking lopsided/
- * cramped). One uniform key width for every char row, sized so a
- * 10-key row spans 776px (10*74 + 9*4 = 776), centered with a 12px
- * margin each side. All four char rows are now 10 keys (Row 2 got '.'
- * appended in an earlier change; Row 3 gets '+' appended here -- see
- * KB_ROW3's own doc comment above), so all four rows share this exact
- * centering -- no row-specific offset is needed anymore. */
+ * cramped). One uniform key width for Rows 0-2, sized so a 10-key row
+ * spans 776px (10*74 + 9*4 = 776), centered with a 12px margin each
+ * side. Row 3 has 11 keys ('+' and now '*' both appended -- see
+ * KB_ROW3's own doc comment above) and gets its own, slightly narrower
+ * KB_ROW3_KEY_W/KB_ROW3_X below rather than reusing KB_KEY_W -- an
+ * 11th 74px key plus its gap would overflow the shared 776px span. */
 #define KB_KEY_W     74
 #define KB_KEY_H     43
 #define KB_GAP_H      4
 #define KB_GAP_V      3
+
+/* Row 3's own key width -- 11 keys (ZXCVBNM-_+*), same 12px-margin
+ * convention as Rows 0-2 but solved for 11 keys instead of 10:
+ * (800 - 2*12 - 10*4) / 11 = 66.9, rounded down to 66 for a clean
+ * integer width (see KB_ROW3_X below for the resulting margin, also
+ * an exact integer -- both chosen together rather than truncating
+ * independently, so the row is still centered, not just left-fit). */
+#define KB_ROW3_KEY_W 66
 
 #define KB_ROW0_Y (KEYBOARD_TOP_Y + 0 * (KB_KEY_H + KB_GAP_V))
 #define KB_ROW1_Y (KEYBOARD_TOP_Y + 1 * (KB_KEY_H + KB_GAP_V))
@@ -78,11 +97,13 @@ static const char *const KB_ROW3 = "ZXCVBNM-_+";
 #define KB_ACTION_Y (KEYBOARD_TOP_Y + 4 * (KB_KEY_H + KB_GAP_V))
 #define KB_ACTION_H KB_KEY_H
 
-/* Row X offsets -- all four char rows now centered identically within
- * the 800px panel at the shared KB_KEY_W above (see that constant's doc
- * comment for the centering math) -- Row 3 no longer needs its own
- * narrower-row offset now that '+' brings it to 10 keys too. TFT_WIDTH
- * literal (800), not a #include of ui/tft/display.h -- same no-display-
+/* Row X offsets -- Rows 0-2 centered identically within the 800px panel
+ * at the shared KB_KEY_W above (see that constant's doc comment for the
+ * centering math). Row 3 is centered separately at its own
+ * KB_ROW3_KEY_W (11 keys, '*' appended -- see KB_ROW3's doc comment
+ * above), which is back to needing its own offset the way it did before
+ * '+' briefly brought it to a shared-width 10 keys. TFT_WIDTH literal
+ * (800), not a #include of ui/tft/display.h -- same no-display-
  * dependency convention this module's own file-level doc comment
  * already establishes, and the same literal-800 convention
  * measure_points_screen.c's own add_code_picker_buttons() already uses
@@ -90,7 +111,7 @@ static const char *const KB_ROW3 = "ZXCVBNM-_+";
 #define KB_ROW0_X 12  /* 10 keys: (800 - (10*74 + 9*4)) / 2 = 12 */
 #define KB_ROW1_X 12  /* 10 keys, same span as Row 0 */
 #define KB_ROW2_X 12  /* 10 keys (incl '.'), same span as Row 0/1 */
-#define KB_ROW3_X 12  /* 10 keys (incl '+'), same span as Row 0/1/2 */
+#define KB_ROW3_X 17  /* 11 keys (incl '+' and '*'): (800 - (11*66 + 10*4)) / 2 = 17 */
 
 /* Action row (Space/Del/Done) -- same 12px margin and full-width span as
  * the char rows above, rather than the original layout's left-justified
@@ -174,7 +195,7 @@ static void key_done_activate(UiWidget *self, void *screen_ctx)
  * ---------------------------------------------------------------------- */
 
 static bool add_char_row(UiWidgetGrid *grid, const char *row,
-                         uint16_t row_x, uint16_t row_y,
+                         uint16_t row_x, uint16_t row_y, uint16_t key_w,
                          UiKeyboardLabels *labels, uint32_t *slot)
 {
     uint16_t x = row_x;
@@ -190,7 +211,7 @@ static bool add_char_row(UiWidgetGrid *grid, const char *row,
         label_slot[1] = '\0';
         (*slot)++;
 
-        UiRect r = { x, row_y, KB_KEY_W, KB_KEY_H };
+        UiRect r = { x, row_y, key_w, KB_KEY_H };
         UiWidget *key = ui_grid_add_button(grid, r, label_slot, key_char_activate);
         if (!key) return false;
         /* Up/Down nav buttons must never land on a keyboard key -- see
@@ -200,7 +221,7 @@ static bool add_char_row(UiWidgetGrid *grid, const char *row,
          * (Job Create today; Measure Points once nav buttons are added
          * there for its own longer field list). Tap is unaffected. */
         ui_widget_mark_nav_excluded(key);
-        x = (uint16_t)(x + KB_KEY_W + KB_GAP_H);
+        x = (uint16_t)(x + key_w + KB_GAP_H);
     }
     return true;
 }
@@ -209,10 +230,10 @@ bool keyboard_add_to_grid(UiWidgetGrid *grid, UiKeyboardLabels *labels)
 {
     uint32_t slot = 0;
     bool ok = true;
-    ok = ok && add_char_row(grid, KB_ROW0, KB_ROW0_X, KB_ROW0_Y, labels, &slot);
-    ok = ok && add_char_row(grid, KB_ROW1, KB_ROW1_X, KB_ROW1_Y, labels, &slot);
-    ok = ok && add_char_row(grid, KB_ROW2, KB_ROW2_X, KB_ROW2_Y, labels, &slot);
-    ok = ok && add_char_row(grid, KB_ROW3, KB_ROW3_X, KB_ROW3_Y, labels, &slot);
+    ok = ok && add_char_row(grid, KB_ROW0, KB_ROW0_X, KB_ROW0_Y, KB_KEY_W,       labels, &slot);
+    ok = ok && add_char_row(grid, KB_ROW1, KB_ROW1_X, KB_ROW1_Y, KB_KEY_W,       labels, &slot);
+    ok = ok && add_char_row(grid, KB_ROW2, KB_ROW2_X, KB_ROW2_Y, KB_KEY_W,       labels, &slot);
+    ok = ok && add_char_row(grid, KB_ROW3, KB_ROW3_X, KB_ROW3_Y, KB_ROW3_KEY_W,  labels, &slot);
 
     UiRect space_r = { KB_SPACE_X, KB_ACTION_Y, KB_SPACE_W, KB_ACTION_H };
     UiRect del_r   = { KB_DEL_X,   KB_ACTION_Y, KB_DEL_W,   KB_ACTION_H };

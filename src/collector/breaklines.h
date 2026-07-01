@@ -41,6 +41,24 @@
  *     treatment as the symmetric case of a bare "KEY" with nothing open
  *     (Alex confirmed both read the same way: no open line exists to
  *     join, so the point stands alone).
+ *   - A '*' anywhere in a code marks the start of a free-text detail
+ *     suffix that carries information for the drafter/engineer but has
+ *     no effect on line-key matching: everything from '*' onward
+ *     (asterisk included) is stripped before a code is classified or
+ *     compared. "GRV" and "GRV*4in thick" key-match identically, so a
+ *     surveyor can append detail to any capture -- '+', '-', or plain --
+ *     without breaking the line it belongs to. Alex's own worked
+ *     example: "+GRV, GRV*4in thick, GRV, -GRV*end of gravel" builds one
+ *     open-then-closed GRV line with 4 vertices, exactly as if every
+ *     '*' suffix were absent. The suffix text itself is NOT discarded --
+ *     MeasurePoint::code keeps it verbatim (breaklines_build() never
+ *     modifies the store, see this header's determinism guarantee
+ *     below), so it still reaches CSV/LandXML export in the
+ *     Description/code column for the drafter to read. A code that is
+ *     ALL suffix (starts with '*', e.g. a bare "*just a note") has no
+ *     real code text before the '*' to key a line by, so it is treated
+ *     exactly like an empty code -- an ordinary unconnected point, not
+ *     an error.
  *
  * This module is pure logic over a MeasurePointStore -- no
  * ui/tft/display.h dependency, same logic/render split every other
@@ -105,8 +123,11 @@ typedef struct {
     uint32_t vertex_indices[GM_BREAKLINE_MAX_VERTICES];
     uint32_t vertex_count;
 
-    /* The key text after the leading '+'/'-' (e.g. "24RCPF" for a code
-     * of "+24RCPF"). Truncated to this buffer's capacity on an
+    /* The key text after the leading '+'/'-', with any '*' detail
+     * suffix (and the '*' itself) already stripped -- e.g. "24RCPF" for
+     * a code of "+24RCPF", and also "GRV" for a code of "+GRV*top of
+     * ditch" (see this header's file-level doc comment on the '*'
+     * convention). Truncated to this buffer's capacity on an
      * over-length code, same MEASURE_POINT_CODE_MAX-derived sizing
      * every other code-text copy in this codebase already uses. */
     char key[GM_MEASURE_POINT_CODE_MAX];
