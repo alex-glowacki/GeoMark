@@ -12,6 +12,7 @@
 #include "geomark.h"
 #include "base/station.h"
 #include "rover/station.h"
+#include "staticlog/station.h"
 #include "ui/client.h"
 #include "ui/preview.h"
 #include "util/log.h"
@@ -27,16 +28,22 @@
 
 static void print_usage(const char *prog) {
     fprintf(stderr,
-            "Usage: %s --mode <base|rover|ui> [--config <path>] [--host <ip>] [--ui-preview]\n"
+            "Usage: %s --mode <base|rover|ui|static-log> [--config <path>] "
+            "[--host <ip>] [--ui-preview] [--out <path>]\n"
             "\n"
-            "  --mode base    Base station: read UM980, relay RTCM3 via radio\n"
-            "  --mode rover   Rover pole-top: receive corrections, stream fixes via WiFi\n"
-            "  --mode ui      Handheld (Pi 5): receive fixes from pole-top, drive TFT\n"
+            "  --mode base        Base station: read UM980, relay RTCM3 via radio\n"
+            "  --mode rover       Rover pole-top: receive corrections, stream fixes via WiFi\n"
+            "  --mode ui          Handheld (Pi 5): receive fixes from pole-top, drive TFT\n"
+            "  --mode static-log  Log raw UM980 observations to --out for later RINEX\n"
+            "                     conversion + NGS OPUS submission -- see\n"
+            "                     staticlog/station.h for the full workflow. Runs until\n"
+            "                     Ctrl-C/SIGTERM.\n"
             "\n"
             "  --config <path>  Config file (default: /etc/geomark/geomark.conf)\n"
             "  --host <ip>      Pole-top IP for UI mode -- used by both the screen-stack\n"
             "                   UI's Measure Points RTK feed and the legacy survey flow\n"
             "                   (default: " DEFAULT_POLE_TOP_HOST ")\n"
+            "  --out <path>     Output file for --mode static-log (required for that mode)\n"
             "  --ui-preview     With --mode ui: run the screen-stack UI (Sleep -> Main\n"
             "                   Menu -> Job Create/Open -> Measure Points, etc.) instead\n"
             "                   of the legacy button-only survey flow. geomark-ui.service\n"
@@ -49,6 +56,7 @@ int main(int argc, char *argv[]) {
     geomark_mode_t mode          = GEOMARK_MODE_UNKNOWN;
     const char    *config_path   = "/etc/geomark/geomark.conf";
     const char    *pole_top_host = DEFAULT_POLE_TOP_HOST;
+    const char    *out_path      = NULL;
     bool           ui_preview    = false;
 
     for (int i = 1; i < argc; i++) {
@@ -60,6 +68,8 @@ int main(int argc, char *argv[]) {
                 mode = GEOMARK_MODE_ROVER;
             } else if (strcmp(argv[i], "ui") == 0) {
                 mode = GEOMARK_MODE_UI;
+            } else if (strcmp(argv[i], "static-log") == 0) {
+                mode = GEOMARK_MODE_STATIC_LOG;
             } else {
                 fprintf(stderr, "Unknown mode: %s\n", argv[i]);
                 print_usage(argv[0]);
@@ -69,6 +79,8 @@ int main(int argc, char *argv[]) {
             config_path = argv[++i];
         } else if (strcmp(argv[i], "--host") == 0 && i + 1 < argc) {
             pole_top_host = argv[++i];
+        } else if (strcmp(argv[i], "--out") == 0 && i + 1 < argc) {
+            out_path = argv[++i];
         } else if (strcmp(argv[i], "--ui-preview") == 0) {
             ui_preview = true;
         } else {
@@ -90,10 +102,23 @@ int main(int argc, char *argv[]) {
         return EXIT_FAILURE;
     }
 
+    if (mode == GEOMARK_MODE_STATIC_LOG && !out_path) {
+        fprintf(stderr, "Error: --mode static-log requires --out <path>.\n");
+        print_usage(argv[0]);
+        return EXIT_FAILURE;
+    }
+
+    if (out_path && mode != GEOMARK_MODE_STATIC_LOG) {
+        fprintf(stderr, "Error: --out only applies to --mode static-log.\n");
+        print_usage(argv[0]);
+        return EXIT_FAILURE;
+    }
+
     log_init(NULL); /* stderr logging until config is loaded */
 
     const char *mode_str = (mode == GEOMARK_MODE_BASE)  ? "base"  :
-                           (mode == GEOMARK_MODE_ROVER) ? "rover" : "ui";
+                           (mode == GEOMARK_MODE_ROVER) ? "rover" :
+                           (mode == GEOMARK_MODE_STATIC_LOG) ? "static-log" : "ui";
     log_info("GeoMark %s starting in %s mode%s", GEOMARK_VERSION_STRING, mode_str,
              ui_preview ? " (UI PREVIEW)" : "");
 
@@ -102,6 +127,8 @@ int main(int argc, char *argv[]) {
         ret = base_station_run(config_path);
     } else if (mode == GEOMARK_MODE_ROVER) {
         ret = rover_station_run(config_path);
+    } else if (mode == GEOMARK_MODE_STATIC_LOG) {
+        ret = staticlog_station_run(config_path, out_path);
     } else if (ui_preview) {
         ret = ui_preview_run(pole_top_host);
     } else {

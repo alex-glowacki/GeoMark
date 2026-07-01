@@ -26,7 +26,9 @@ typedef enum {
     GEOMARK_MODE_UNKNOWN = 0,
     GEOMARK_MODE_BASE,
     GEOMARK_MODE_ROVER,
-    GEOMARK_MODE_UI, /* Handheld Pi 5: receives packets, drives TFT */
+    GEOMARK_MODE_UI,         /* Handheld Pi 5: receives packets, drives TFT */
+    GEOMARK_MODE_STATIC_LOG, /* Raw observation logging for OPUS --
+                              * see staticlog/station.h */
 } geomark_mode_t;
 
 /* -------------------------------------------------------------------------

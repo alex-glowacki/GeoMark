@@ -32,6 +32,7 @@ set(GEOMARK_SOURCES
     src/gnss/rtcm3.c
     src/base/station.c
     src/rover/station.c
+    src/staticlog/station.c
     src/collector/collector.c
     src/collector/points.c
     src/collector/coords.c

@@ -83,6 +83,22 @@ SerialResult um980_init_base(Um980 *u);
  */
 SerialResult um980_init_rover(Um980 *u);
 /**
+ * @brief Configure the UM980 to stream raw observations + ephemeris
+ *        for later RINEX conversion and OPUS submission.
+ *
+ * Sends: CONFIG SIGNALGROUP 2, LOG RANGECMPB ONTIME 0.5, and one
+ * LOG <constellation>EPHB ONNEW per supported constellation (GPS,
+ * GLONASS, Galileo, BDS, BDS-3, QZSS). Does NOT send MODE BASE or
+ * MODE ROVER -- see staticlog/station.h for the full workflow this
+ * feeds into (a static occupation, converted to RINEX with Unicore's
+ * own Windows-only Converter tool, then submitted to NGS OPUS).
+ *
+ * @param u  Open Um980.
+ * @return   SERIAL_OK if all commands acknowledged, negative on first
+ *           failure (logged with the exact command that was rejected).
+ */
+SerialResult um980_init_static_log(Um980 *u);
+/**
  * @brief Close the UM980 serial port and reset the struct.
  *
  * Safe to call on an already-closed Um980.
