@@ -28,16 +28,15 @@
  *   2. IMPORTANT -- test this on a SHORT (few-minute) capture first,
  *      not directly on a multi-hour occupation. See um980_init_static_
  *      log()'s own doc comment (gnss/um980.h): the ephemeris LOG
- *      commands' trigger keyword (ONCHANGED) is now confirmed directly
- *      against Unicore's manual body text, but the six command names
- *      themselves (GPSEPHB/GLOEPHB/GALEPHB/BDSEPHB/BD3EPHB/QZSSEPHB)
- *      are still only confirmed against the manual's table of
- *      contents, not verified per-firmware. A wrong command name fails
- *      loudly and immediately (um980_send_command() logs the device's
- *      exact rejection text, e.g. the "PARSING_FAILED GRAMMAR ERROR"
- *      response that caught the earlier wrong ONNEW trigger during
- *      this feature's own field testing) -- much better to discover
- *      that in a 5-minute test than after driving home from a 2-hour
+ *      commands went through two rejected attempts before landing on
+ *      "ONTIME 120" -- both a fabricated keyword and a real Unicore
+ *      keyword the manual's own general syntax suggested but this
+ *      firmware doesn't accept for these specific messages. The
+ *      current form is grounded in a real published working UM980
+ *      configuration for this exact purpose, not just documentation,
+ *      but a short test first is still the difference between finding
+ *      out immediately (loud, logged, with the device's exact
+ *      rejection text) versus after driving home from a 2-hour
  *      occupation.
  *
  *   3. Copy the resulting file off the Pi (scp) to a Windows machine

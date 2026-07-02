@@ -249,28 +249,35 @@ SerialResult um980_init_rover(Um980 *u) {
  * this exact command as its own worked example for enabling raw
  * observation output.
  *
- * Per-constellation ephemeris, ONCHANGED (output whenever a new/updated
- * ephemeris is decoded, not continuously -- each satellite's ephemeris
- * changes roughly every two hours, so an event trigger is the correct
- * cadence, not ONTIME). ONCHANGED is confirmed directly against
- * Unicore's own manual, Section 7's general Data Output Commands
- * syntax ("[Command name] [serial port (optional)] [output rate/
- * ONCHANGED (optional)]", with worked examples "GPSIONA ONCHANGED" and
- * "OBSVBASEA COM1 ONCHANGED") -- this superseded an earlier, WRONG
- * guess of "ONNEW" (not a real Unicore keyword at all) that a live
- * field test caught immediately: the UM980 rejected it with
- * "PARSING_FAILED GRAMMAR ERROR,ONNEW", now impossible to hit again.
- * Command names themselves (GPSEPHB/GLOEPHB/GALEPHB/BDSEPHB/BD3EPHB/
- * QZSSEPHB, "B" suffix for binary output) are unaffected by this fix --
- * they were never what the device rejected; only the trigger keyword
- * was wrong. Still only confirmed against the manual's table of
- * contents for the command names themselves (see this function's own
- * earlier note) -- if firmware differences ever make one of the six
- * command names wrong too, um980_send_command() logs the device's
- * exact rejection text, same as it did for the ONNEW mistake.
- * staticlog/station.h's own doc comment tells the caller to run a
- * short (few-minute) test capture before committing to a multi-hour
- * occupation for exactly this reason.
+ * Per-constellation ephemeris, ONTIME 120 (period, not event-triggered).
+ * Two prior attempts at the trigger keyword both failed on real
+ * hardware: "ONNEW" (fabricated, not a real Unicore keyword) and
+ * "ONCHANGED" (real Unicore syntax per the manual's general Section 7
+ * rule, but apparently not accepted for GPSEPHB specifically on this
+ * firmware -- "ONCHANGED only applies to particular messages" per that
+ * same manual, and ephemeris evidently isn't one of them). ONTIME 120
+ * replaces both: confirmed against a real published working UM980
+ * configuration for this exact purpose (raw logging for RTKLIB/RINEX,
+ * OpenStreetMap diary by a UM980 user, listing "GPSEPHB 120 BDSEPHB
+ * 120 BD3EPHB 120 GLOEPHB 120 GALEPHB 120" with no ONCHANGED/ONNEW at
+ * all), AND it reuses the exact "LOG <NAME> ONTIME <seconds>" grammar
+ * already proven successful on THIS hardware in THIS session for
+ * RANGECMPB, rather than trying a third different, still-unverified
+ * keyword. 120 seconds is redundant relative to how rarely ephemeris
+ * actually changes (~every two hours), but that redundancy is the
+ * point: it guarantees a fresh, valid nav message is always present in
+ * the log regardless of when the RINEX conversion happens to sample
+ * it, at the cost of a little extra file size.
+ *
+ * QZSSEPHB is not in that published working config (only GPS/BDS/
+ * BDS-3/GLONASS/Galileo are) -- kept here since it's a real, TOC-listed
+ * Unicore message name and QZSS ephemeris costs nothing extra to
+ * request, but it's the one command in this list without independent
+ * real-world confirmation. staticlog/station.h's own doc comment tells
+ * the caller to run a short (few-minute) test capture before
+ * committing to a multi-hour occupation for exactly this reason --
+ * two real firmware rejections already came out of that habit this
+ * session, at zero field-time cost.
  * ---------------------------------------------------------------------- */
 
 #define SEND_STATIC(u, cmd)                                          \
@@ -297,12 +304,12 @@ SerialResult um980_init_static_log(Um980 *u) {
 
     SEND_STATIC(u, "CONFIG SIGNALGROUP 2");   /* all bands, same as base/rover */
     SEND_STATIC(u, "LOG RANGECMPB ONTIME 0.5");
-    SEND_STATIC(u, "LOG GPSEPHB ONCHANGED");
-    SEND_STATIC(u, "LOG GLOEPHB ONCHANGED");
-    SEND_STATIC(u, "LOG GALEPHB ONCHANGED");
-    SEND_STATIC(u, "LOG BDSEPHB ONCHANGED");
-    SEND_STATIC(u, "LOG BD3EPHB ONCHANGED");
-    SEND_STATIC(u, "LOG QZSSEPHB ONCHANGED");
+    SEND_STATIC(u, "LOG GPSEPHB ONTIME 120");
+    SEND_STATIC(u, "LOG GLOEPHB ONTIME 120");
+    SEND_STATIC(u, "LOG GALEPHB ONTIME 120");
+    SEND_STATIC(u, "LOG BDSEPHB ONTIME 120");
+    SEND_STATIC(u, "LOG BD3EPHB ONTIME 120");
+    SEND_STATIC(u, "LOG QZSSEPHB ONTIME 120");
 
     return SERIAL_OK;
 }
