@@ -51,11 +51,27 @@ gm_status_t staticlog_station_run(const char *config_path, const char *out_path)
         config_defaults(&cfg);
     }
 
-    if (cfg.log_file[0] != '\0')
-        log_init(cfg.log_file);
-
     log_info("staticlog: serial=%s baud=%d -> %s",
              cfg.serial_device, cfg.serial_baud, out_path);
+
+    /* Deliberately NOT calling log_init(cfg.log_file) here, unlike
+     * base_station_run()/rover_station_run() -- those run as long-lived
+     * background systemd services with no attached terminal, where
+     * redirecting to a log file is correct. static-log is the opposite:
+     * a foreground, interactive, one-shot command run over an active
+     * SSH session specifically so its progress can be watched live (see
+     * this function's own progress-line logging below, and station.h's
+     * file-level doc comment). log_init() REPLACES the log destination
+     * rather than adding to it (see util/log.c's g_fp) -- calling it
+     * here would silently redirect every line after this point into
+     * cfg.log_file with no on-screen indication the switch happened,
+     * which is exactly the bug an earlier version of this function had:
+     * config_load()'s own "file not found, using defaults" warning
+     * would print to the terminal (log_init(NULL) from main() was still
+     * active), then this call would immediately redirect everything
+     * after it into /var/log/geomark.log, and the terminal would go
+     * silent with no further explanation. Stay on whatever main()
+     * already configured (stderr) instead. */
 
     /* --- UM980 ------------------------------------------------------------ */
     Um980 um980;
