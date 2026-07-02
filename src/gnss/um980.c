@@ -121,6 +121,7 @@ SerialResult um980_send_command(Um980 *u, const char *cmd) {
 
     SerialResult wr = serial_write(&u->serial, (const uint8_t *)packet, cmd_len + 2);
     if (wr != SERIAL_OK) {
+        log_error("um980_send_command: '%s' -- serial_write failed (%d)", cmd, wr);
         return wr;
     }
 
@@ -130,9 +131,13 @@ SerialResult um980_send_command(Um980 *u, const char *cmd) {
         int n = read_line(&u->serial, resp, sizeof(resp));
 
         if (n == SERIAL_ERR_TIMEOUT || n == 0) {
+            log_error("um980_send_command: '%s' -- no response from the "
+                     "device (timed out waiting for a line)", cmd);
             return SERIAL_ERR_TIMEOUT;
         }
         if (n < 0) {
+            log_error("um980_send_command: '%s' -- serial_read failed (%d), "
+                     "not a timeout or a device response", cmd, n);
             return SERIAL_ERR_IO;
         }
 
@@ -140,10 +145,19 @@ SerialResult um980_send_command(Um980 *u, const char *cmd) {
             return SERIAL_OK;
         }
         if (strstr(resp, "ERROR") != NULL) {
+            /* strip the trailing \r\n read_line() left in resp for a
+             * cleaner one-line log message */
+            size_t len = strlen(resp);
+            while (len > 0 && (resp[len - 1] == '\n' || resp[len - 1] == '\r'))
+                resp[--len] = '\0';
+            log_error("um980_send_command: '%s' -- device rejected it: '%s'",
+                     cmd, resp);
             return SERIAL_ERR_IO;
         }
     }
 
+    log_error("um980_send_command: '%s' -- gave up after 64 lines with "
+             "neither OK nor ERROR seen", cmd);
     return SERIAL_ERR_TIMEOUT;
 }
 
@@ -245,25 +259,27 @@ SerialResult um980_init_rover(Um980 *u) {
  * verified against the full command reference body itself (only the
  * TOC was available), and a NovAtel-compatible source describing the
  * same message-ID family uses the longer form "GPSEPHEMB" instead.
- * um980_send_command() already surfaces a clear SERIAL_ERR_IO with the
- * exact rejected command logged if any one of these names is wrong for
- * the receiver's actual firmware -- staticlog/station.h's own doc
- * comment tells the caller to run a short (few-minute) test capture
- * before committing to a multi-hour occupation, specifically so a
- * command-name mismatch is caught immediately rather than discovered
- * after driving home.
+ * um980_send_command() logs the device's actual response text (not
+ * just a generic error code) on any rejection, timeout, or I/O error --
+ * staticlog/station.h's own doc comment tells the caller to run a
+ * short (few-minute) test capture before committing to a multi-hour
+ * occupation, specifically so a command-name mismatch (or any other
+ * rejection) is caught immediately, with the device's own explanation
+ * in the log, rather than discovered after driving home.
  * ---------------------------------------------------------------------- */
 
 #define SEND_STATIC(u, cmd)                                          \
     do {                                                            \
         SerialResult _r = um980_send_command((u), (cmd));           \
         if (_r != SERIAL_OK) {                                      \
-            log_error("um980_init_static_log: command '%s' was "   \
-                     "rejected or timed out (%d) -- check the "    \
-                     "exact ephemeris log name for this firmware", \
-                     (cmd), _r);                                    \
+            /* um980_send_command() itself already logged the exact \
+             * reason (device ERROR response text, timeout, or a    \
+             * low-level I/O error) -- this just identifies WHICH   \
+             * of static-log's own commands failed. */              \
+            log_error("um980_init_static_log: '%s' failed -- see "  \
+                     "the line above for why", (cmd));              \
             return _r;                                              \
-        }                                                           \
+        }                                                            \
     } while (0)
 
 SerialResult um980_init_static_log(Um980 *u) {
