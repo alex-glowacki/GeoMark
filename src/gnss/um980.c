@@ -249,23 +249,28 @@ SerialResult um980_init_rover(Um980 *u) {
  * this exact command as its own worked example for enabling raw
  * observation output.
  *
- * Per-constellation ephemeris, ONNEW (output whenever a new/updated
+ * Per-constellation ephemeris, ONCHANGED (output whenever a new/updated
  * ephemeris is decoded, not continuously -- each satellite's ephemeris
- * changes roughly every two hours, so ONNEW is the correct cadence, not
- * ONTIME). Command names are confirmed against the SHORT form Unicore's
- * own manual table of contents uses (GPSEPH/GLOEPH/GALEPH/BDSEPH/
- * BD3EPH/QZSSEPH, "B" suffix appended for binary output per that same
- * manual's documented convention for RANGECMP -> RANGECMPB) -- NOT
- * verified against the full command reference body itself (only the
- * TOC was available), and a NovAtel-compatible source describing the
- * same message-ID family uses the longer form "GPSEPHEMB" instead.
- * um980_send_command() logs the device's actual response text (not
- * just a generic error code) on any rejection, timeout, or I/O error --
+ * changes roughly every two hours, so an event trigger is the correct
+ * cadence, not ONTIME). ONCHANGED is confirmed directly against
+ * Unicore's own manual, Section 7's general Data Output Commands
+ * syntax ("[Command name] [serial port (optional)] [output rate/
+ * ONCHANGED (optional)]", with worked examples "GPSIONA ONCHANGED" and
+ * "OBSVBASEA COM1 ONCHANGED") -- this superseded an earlier, WRONG
+ * guess of "ONNEW" (not a real Unicore keyword at all) that a live
+ * field test caught immediately: the UM980 rejected it with
+ * "PARSING_FAILED GRAMMAR ERROR,ONNEW", now impossible to hit again.
+ * Command names themselves (GPSEPHB/GLOEPHB/GALEPHB/BDSEPHB/BD3EPHB/
+ * QZSSEPHB, "B" suffix for binary output) are unaffected by this fix --
+ * they were never what the device rejected; only the trigger keyword
+ * was wrong. Still only confirmed against the manual's table of
+ * contents for the command names themselves (see this function's own
+ * earlier note) -- if firmware differences ever make one of the six
+ * command names wrong too, um980_send_command() logs the device's
+ * exact rejection text, same as it did for the ONNEW mistake.
  * staticlog/station.h's own doc comment tells the caller to run a
  * short (few-minute) test capture before committing to a multi-hour
- * occupation, specifically so a command-name mismatch (or any other
- * rejection) is caught immediately, with the device's own explanation
- * in the log, rather than discovered after driving home.
+ * occupation for exactly this reason.
  * ---------------------------------------------------------------------- */
 
 #define SEND_STATIC(u, cmd)                                          \
@@ -292,12 +297,12 @@ SerialResult um980_init_static_log(Um980 *u) {
 
     SEND_STATIC(u, "CONFIG SIGNALGROUP 2");   /* all bands, same as base/rover */
     SEND_STATIC(u, "LOG RANGECMPB ONTIME 0.5");
-    SEND_STATIC(u, "LOG GPSEPHB ONNEW");
-    SEND_STATIC(u, "LOG GLOEPHB ONNEW");
-    SEND_STATIC(u, "LOG GALEPHB ONNEW");
-    SEND_STATIC(u, "LOG BDSEPHB ONNEW");
-    SEND_STATIC(u, "LOG BD3EPHB ONNEW");
-    SEND_STATIC(u, "LOG QZSSEPHB ONNEW");
+    SEND_STATIC(u, "LOG GPSEPHB ONCHANGED");
+    SEND_STATIC(u, "LOG GLOEPHB ONCHANGED");
+    SEND_STATIC(u, "LOG GALEPHB ONCHANGED");
+    SEND_STATIC(u, "LOG BDSEPHB ONCHANGED");
+    SEND_STATIC(u, "LOG BD3EPHB ONCHANGED");
+    SEND_STATIC(u, "LOG QZSSEPHB ONCHANGED");
 
     return SERIAL_OK;
 }
