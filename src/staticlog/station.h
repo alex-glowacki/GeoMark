@@ -28,16 +28,25 @@
  *   2. IMPORTANT -- test this on a SHORT (few-minute) capture first,
  *      not directly on a multi-hour occupation. See um980_init_static_
  *      log()'s own doc comment (gnss/um980.h): the ephemeris LOG
- *      commands went through two rejected attempts before landing on
- *      "ONTIME 120" -- both a fabricated keyword and a real Unicore
- *      keyword the manual's own general syntax suggested but this
- *      firmware doesn't accept for these specific messages. The
- *      current form is grounded in a real published working UM980
- *      configuration for this exact purpose, not just documentation,
- *      but a short test first is still the difference between finding
- *      out immediately (loud, logged, with the device's exact
- *      rejection text) versus after driving home from a 2-hour
- *      occupation.
+ *      commands went through three rejected attempts on real hardware
+ *      before landing on the current bare "<NAME> <period>" syntax,
+ *      taken verbatim from a real published working UM980
+ *      configuration rather than adapted from documentation or from
+ *      RANGECMPB's own (different) working syntax. If this STILL gets
+ *      rejected, stop iterating blind through GeoMark rebuild/redeploy
+ *      cycles -- connect directly with minicom instead and try syntax
+ *      variants live, in seconds, with the device's response visible
+ *      immediately:
+ *          sudo systemctl stop geomark-rover   # GeoMark not running
+ *          sudo minicom -D /dev/ttyAMA0 -b 115200
+ *          UNLOG
+ *          GPSEPHB 120
+ *      This isn't a workaround that avoids fixing GeoMark -- it's the
+ *      fast path TO the fix: once a working line is found this way,
+ *      it goes straight into um980_init_static_log() as the next,
+ *      hopefully final, correction. Three full rebuild-redeploy-drive
+ *      -to-the-rover cycles for three still-unverified guesses is a
+ *      worse use of field time than five minutes in minicom.
  *
  *   3. Copy the resulting file off the Pi (scp) to a Windows machine
  *      (WSL2's own Windows host works fine for this). Unicore's own

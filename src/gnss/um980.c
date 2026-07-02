@@ -249,35 +249,33 @@ SerialResult um980_init_rover(Um980 *u) {
  * this exact command as its own worked example for enabling raw
  * observation output.
  *
- * Per-constellation ephemeris, ONTIME 120 (period, not event-triggered).
- * Two prior attempts at the trigger keyword both failed on real
- * hardware: "ONNEW" (fabricated, not a real Unicore keyword) and
- * "ONCHANGED" (real Unicore syntax per the manual's general Section 7
- * rule, but apparently not accepted for GPSEPHB specifically on this
- * firmware -- "ONCHANGED only applies to particular messages" per that
- * same manual, and ephemeris evidently isn't one of them). ONTIME 120
- * replaces both: confirmed against a real published working UM980
- * configuration for this exact purpose (raw logging for RTKLIB/RINEX,
- * OpenStreetMap diary by a UM980 user, listing "GPSEPHB 120 BDSEPHB
- * 120 BD3EPHB 120 GLOEPHB 120 GALEPHB 120" with no ONCHANGED/ONNEW at
- * all), AND it reuses the exact "LOG <NAME> ONTIME <seconds>" grammar
- * already proven successful on THIS hardware in THIS session for
- * RANGECMPB, rather than trying a third different, still-unverified
- * keyword. 120 seconds is redundant relative to how rarely ephemeris
- * actually changes (~every two hours), but that redundancy is the
- * point: it guarantees a fresh, valid nav message is always present in
- * the log regardless of when the RINEX conversion happens to sample
- * it, at the cost of a little extra file size.
- *
- * QZSSEPHB is not in that published working config (only GPS/BDS/
- * BDS-3/GLONASS/Galileo are) -- kept here since it's a real, TOC-listed
- * Unicore message name and QZSS ephemeris costs nothing extra to
- * request, but it's the one command in this list without independent
- * real-world confirmation. staticlog/station.h's own doc comment tells
- * the caller to run a short (few-minute) test capture before
- * committing to a multi-hour occupation for exactly this reason --
- * two real firmware rejections already came out of that habit this
- * session, at zero field-time cost.
+ * Per-constellation ephemeris: bare "<NAME> <period>" syntax, no "LOG"
+ * prefix and no trigger keyword at all. Three prior attempts at a
+ * trigger keyword all failed on real hardware, in this order:
+ *   1. "ONNEW"     -- fabricated, not a real Unicore keyword at all.
+ *   2. "ONCHANGED" -- real Unicore syntax (manual's general Section 7
+ *      rule), rejected anyway: "ONCHANGED only applies to particular
+ *      messages" per that same manual, and GPSEPHB evidently isn't one
+ *      of them on this firmware.
+ *   3. "LOG GPSEPHB ONTIME 120" -- rejected too, even though this
+ *      exact "LOG <NAME> ONTIME <seconds>" grammar was already proven
+ *      working on this same hardware, this same session, for
+ *      RANGECMPB. Ephemeris messages evidently don't accept the LOG-
+ *      prefixed ONTIME form RANGECMPB does, even though the keyword
+ *      itself is valid Unicore syntax in general.
+ * All three were reasonable adaptations of documented/proven syntax
+ * that turned out not to transfer to this specific message family on
+ * this specific firmware -- three real, live rejections is the signal
+ * to stop adapting and use a literally-verified example instead. A
+ * real published working UM980 deployment for this exact purpose (raw
+ * logging for RTKLIB/RINEX conversion, OpenStreetMap diary) lists:
+ *     GPSEPHB 120 BDSEPHB 120 BD3EPHB 120 GLOEPHB 120 GALEPHB 120
+ * -- no "LOG", no trigger keyword, just the bare message name
+ * followed directly by a bare period in seconds. That exact form is
+ * what's used below, verbatim, rather than translated into any other
+ * pattern.  QZSSEPHB is not in that published config -- included here
+ * by analogy to the same bare syntax, but it is the one command in
+ * this list without independent real-world confirmation.
  *
  * COMMAND ORDER MATTERS: RANGECMPB is sent LAST, after every other
  * command has already been sent and cleanly confirmed -- not
@@ -320,12 +318,12 @@ SerialResult um980_init_static_log(Um980 *u) {
     if (r != SERIAL_OK) return r;
 
     SEND_STATIC(u, "CONFIG SIGNALGROUP 2");   /* all bands, same as base/rover */
-    SEND_STATIC(u, "LOG GPSEPHB ONTIME 120");
-    SEND_STATIC(u, "LOG GLOEPHB ONTIME 120");
-    SEND_STATIC(u, "LOG GALEPHB ONTIME 120");
-    SEND_STATIC(u, "LOG BDSEPHB ONTIME 120");
-    SEND_STATIC(u, "LOG BD3EPHB ONTIME 120");
-    SEND_STATIC(u, "LOG QZSSEPHB ONTIME 120");
+    SEND_STATIC(u, "GPSEPHB 120");
+    SEND_STATIC(u, "GLOEPHB 120");
+    SEND_STATIC(u, "GALEPHB 120");
+    SEND_STATIC(u, "BDSEPHB 120");
+    SEND_STATIC(u, "BD3EPHB 120");
+    SEND_STATIC(u, "QZSSEPHB 120");
     /* RANGECMPB LAST -- see this function's own doc comment on why
      * order matters here. Nothing is sent after this, so there is no
      * later command whose response could ever be parsed concurrently
