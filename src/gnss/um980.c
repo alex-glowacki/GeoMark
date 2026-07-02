@@ -278,6 +278,23 @@ SerialResult um980_init_rover(Um980 *u) {
  * committing to a multi-hour occupation for exactly this reason --
  * two real firmware rejections already came out of that habit this
  * session, at zero field-time cost.
+ *
+ * COMMAND ORDER MATTERS: RANGECMPB is sent LAST, after every other
+ * command has already been sent and cleanly confirmed -- not
+ * interleaved among the ephemeris commands, and not sent before them.
+ * RANGECMPB ONTIME 0.5 starts a CONTINUOUS binary stream at 2 Hz the
+ * instant it's acknowledged. Any command sent AFTER that has to have
+ * its own plain-text "OK"/"ERROR" response parsed out of a serial
+ * channel that's simultaneously carrying that live binary stream --
+ * read_line() reads byte-by-byte hunting for a line ending, and binary
+ * data landing in that window can burn through many of
+ * um980_send_command()'s 64 retry attempts before a clean text line
+ * surfaces, which looks exactly like a long hang rather than a clean
+ * failure. Sending RANGECMPB last means nothing is ever parsed
+ * concurrently with it -- every other command's response is read on an
+ * otherwise-quiet channel, and once RANGECMPB itself is confirmed,
+ * um980_init_static_log() returns immediately with no more commands
+ * left to parse a response for.
  * ---------------------------------------------------------------------- */
 
 #define SEND_STATIC(u, cmd)                                          \
@@ -303,13 +320,17 @@ SerialResult um980_init_static_log(Um980 *u) {
     if (r != SERIAL_OK) return r;
 
     SEND_STATIC(u, "CONFIG SIGNALGROUP 2");   /* all bands, same as base/rover */
-    SEND_STATIC(u, "LOG RANGECMPB ONTIME 0.5");
     SEND_STATIC(u, "LOG GPSEPHB ONTIME 120");
     SEND_STATIC(u, "LOG GLOEPHB ONTIME 120");
     SEND_STATIC(u, "LOG GALEPHB ONTIME 120");
     SEND_STATIC(u, "LOG BDSEPHB ONTIME 120");
     SEND_STATIC(u, "LOG BD3EPHB ONTIME 120");
     SEND_STATIC(u, "LOG QZSSEPHB ONTIME 120");
+    /* RANGECMPB LAST -- see this function's own doc comment on why
+     * order matters here. Nothing is sent after this, so there is no
+     * later command whose response could ever be parsed concurrently
+     * with the continuous binary stream this starts. */
+    SEND_STATIC(u, "LOG RANGECMPB ONTIME 0.5");
 
     return SERIAL_OK;
 }
